@@ -42,6 +42,9 @@ class RiskEngine:
         self._last_book_update: dict[str, datetime] = {}
         self._daily_high_water: float = config.starting_equity_usd
         self._session_start = utc_now()
+        self._recent_rejects = 0
+        self._recent_orders = 0
+        self._last_midpoints: dict[str, float] = {}  # token_id -> last midpoint
 
     @property
     def is_halted(self) -> bool:
@@ -75,12 +78,15 @@ class RiskEngine:
             self._check_position_limit(order),
             self._check_portfolio_limit(order),
             self._check_category_concentration(order),
+            self._check_correlated_exposure(order),
             self._check_daily_drawdown(),
             self._check_rate_limit(),
             self._check_max_positions(),
             self._check_spread_ceiling(signal),
             self._check_stale_feed(order),
             self._check_market_close_proximity(order),
+            self._check_reject_rate(),
+            self._check_rapid_adverse_move(order),
         ]
 
         reasons = []
@@ -89,7 +95,10 @@ class RiskEngine:
             if not result.approved:
                 reasons.append(result.reason)
 
+        self._recent_orders += 1
+
         if reasons:
+            self._recent_rejects += 1
             combined = "; ".join(reasons)
             await self._store.insert_risk_event(
                 severity="WARNING",
@@ -221,6 +230,67 @@ class RiskEngine:
         minutes_left = (market.end_date - utc_now()).total_seconds() / 60.0
         if minutes_left < self._config.no_entry_before_close_minutes:
             return RiskDecision(False, f"Market closes in {minutes_left:.0f}min")
+        return RiskDecision(True)
+
+    async def _check_correlated_exposure(self, order: Order) -> RiskDecision:
+        """Reject if exposure to correlated markets (same event/theme) exceeds limit."""
+        if not self._market_state:
+            return RiskDecision(True)
+        market = self._market_state.get_market(order.market_condition_id)
+        if not market:
+            return RiskDecision(True)
+
+        # Correlated = same category + similar slug patterns (heuristic)
+        positions = await self._store.get_open_positions()
+        corr_exp = 0.0
+        for pos in positions:
+            pm = self._market_state.get_market(pos.condition_id)
+            if not pm:
+                continue
+            # Same category counts as correlated
+            if pm.category and pm.category == market.category:
+                corr_exp += pos.size * pos.avg_entry
+            # Same slug prefix (e.g. "will-trump-" markets) counts as correlated
+            elif market.slug and pm.slug and market.slug.split("-")[:2] == pm.slug.split("-")[:2]:
+                corr_exp += pos.size * pos.avg_entry
+
+        proposed = corr_exp + order.size * order.price
+        limit = self._config.starting_equity_usd * (self._config.max_correlated_exposure_pct / 100)
+        if proposed > limit:
+            return RiskDecision(False, f"Correlated exposure: ${proposed:.2f} > ${limit:.2f}")
+        return RiskDecision(True)
+
+    async def _check_reject_rate(self) -> RiskDecision:
+        """Halt if too many orders are being rejected (sign of bad market conditions)."""
+        if self._recent_orders < 10:
+            return RiskDecision(True)  # Need enough data
+        reject_pct = (self._recent_rejects / self._recent_orders) * 100
+        if reject_pct > self._config.max_order_reject_rate_pct:
+            self.halt(f"Reject rate {reject_pct:.0f}% > {self._config.max_order_reject_rate_pct}%")
+            return RiskDecision(False, f"Reject rate: {reject_pct:.0f}% > {self._config.max_order_reject_rate_pct}%")
+        return RiskDecision(True)
+
+    async def _check_rapid_adverse_move(self, order: Order) -> RiskDecision:
+        """Reject if the market price has moved rapidly against the intended trade."""
+        if not self._market_state:
+            return RiskDecision(True)
+        book = self._market_state.get_book(order.token_id)
+        if not book:
+            return RiskDecision(True)
+
+        current_mid = book.midpoint
+        last_mid = self._last_midpoints.get(order.token_id)
+        self._last_midpoints[order.token_id] = current_mid
+
+        if last_mid is None or last_mid == 0:
+            return RiskDecision(True)
+
+        move_pct = abs(current_mid - last_mid) / last_mid * 100
+        if move_pct > self._config.rapid_adverse_move_pct:
+            return RiskDecision(
+                False,
+                f"Rapid move: {move_pct:.1f}% > {self._config.rapid_adverse_move_pct}%",
+            )
         return RiskDecision(True)
 
     async def get_risk_summary(self) -> dict:
