@@ -5,8 +5,11 @@ from src.services.market_state import MarketStateService
 from src.storage.sqlite_store import SQLiteStore
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
+from src.utils.time import utc_now, seconds_since
 
 logger = get_logger("services.signal_engine")
+
+DEBUG_LOG_INTERVAL_SEC = 30.0
 
 
 class SignalEngine:
@@ -25,6 +28,11 @@ class SignalEngine:
         self._bus = event_bus
         self._paused_strategies: set[str] = set()
         self._total_signals = 0
+        self._evals_since_log = 0
+        self._both_books_count = 0
+        self._best_deviation = 0.0
+        self._best_deviation_market = ""
+        self._last_debug_log = utc_now()
 
     @property
     def total_signals_generated(self) -> int:
@@ -62,6 +70,21 @@ class SignalEngine:
             if not books:
                 continue
 
+            # Track if both books are available (for debug)
+            has_both = len(books) >= 2 and len(market.tokens) >= 2
+            if has_both:
+                self._both_books_count += 1
+                # Track complement deviation for debug
+                mids = [b.midpoint for b in books.values()]
+                if len(mids) == 2:
+                    dev = abs(sum(mids) - 1.0)
+                    if dev > self._best_deviation:
+                        self._best_deviation = dev
+                        self._best_deviation_market = market.question[:50]
+
+            self._evals_since_log += 1
+            self._maybe_debug_log()
+
             positions = await self._store.get_open_positions()
 
             for strategy in self._strategies:
@@ -86,3 +109,31 @@ class SignalEngine:
                 except Exception:
                     logger.exception("Strategy %s failed on market %s",
                                      strategy.name, market.condition_id)
+
+    def _maybe_debug_log(self) -> None:
+        if seconds_since(self._last_debug_log) < DEBUG_LOG_INTERVAL_SEC:
+            return
+
+        all_markets = self._state.get_all_markets()
+        all_books = self._state.get_all_books()
+        markets_with_both = 0
+        for m in all_markets.values():
+            if len(m.tokens) >= 2:
+                has = all(all_books.get(t.token_id) for t in m.tokens)
+                if has:
+                    markets_with_both += 1
+
+        logger.info(
+            "Signal debug: %d evals, %d markets with both books, "
+            "best deviation=%.4f (%s), total signals=%d",
+            self._evals_since_log,
+            markets_with_both,
+            self._best_deviation,
+            self._best_deviation_market[:40] if self._best_deviation_market else "none",
+            self._total_signals,
+        )
+        self._evals_since_log = 0
+        self._both_books_count = 0
+        self._best_deviation = 0.0
+        self._best_deviation_market = ""
+        self._last_debug_log = utc_now()

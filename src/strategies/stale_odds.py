@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import uuid4
 
 from src.domain.enums import Side
@@ -8,6 +9,7 @@ from src.settings import StrategiesConfig
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
 from src.utils.maths import calculate_edge, complement_fair_value
+from src.utils.time import seconds_since
 from src.utils.time import utc_now
 
 logger = get_logger("strategies.stale_odds")
@@ -35,6 +37,9 @@ class StaleOddsStrategy(BaseStrategy):
         self._uncertainty_buffer = config.uncertainty_buffer
         self._max_spread = float(stale_cfg.get("max_spread_for_entry", 0.10))
         self._min_confidence = float(stale_cfg.get("min_confidence", 0.3))
+        # Cooldown: don't signal the same market more than once per 60s
+        self._last_signal_time: dict[str, datetime] = {}
+        self._signal_cooldown_sec = 60.0
 
     async def evaluate(
         self,
@@ -43,6 +48,11 @@ class StaleOddsStrategy(BaseStrategy):
         positions: list[Position],
     ) -> list[Signal]:
         if len(market.tokens) != 2:
+            return []
+
+        # Cooldown: skip if we signaled this market recently
+        last = self._last_signal_time.get(market.condition_id)
+        if last and seconds_since(last) < self._signal_cooldown_sec:
             return []
 
         yes_token = market.tokens[0]
@@ -59,7 +69,7 @@ class StaleOddsStrategy(BaseStrategy):
 
         signals: list[Signal] = []
 
-        # Check complement deviation
+        # Check 1: Complement deviation (YES + NO != 1.0)
         complement_sum = yes_book.midpoint + no_book.midpoint
         deviation = abs(complement_sum - 1.0)
 
@@ -70,7 +80,7 @@ class StaleOddsStrategy(BaseStrategy):
             if signal:
                 signals.append(signal)
 
-        # Check each side independently for spread anomaly
+        # Check 2: Spread anomaly (one side much wider than the other)
         for token in market.tokens:
             book = books.get(token.token_id)
             if not book or not book.bids or not book.asks:
@@ -84,10 +94,28 @@ class StaleOddsStrategy(BaseStrategy):
                 market, token.token_id, book, other_book, market.fees_enabled,
             )
             if signal:
-                # Avoid duplicate signals for the same market in same cycle
                 if not any(s.token_id == signal.token_id for s in signals):
                     signals.append(signal)
 
+        # Check 3: Book imbalance (bid depth >> ask depth or vice versa)
+        for token in market.tokens:
+            book = books.get(token.token_id)
+            if not book or not book.bids or not book.asks:
+                continue
+            other_token = no_token if token.token_id == yes_token.token_id else yes_token
+            other_book = books.get(other_token.token_id)
+            if not other_book:
+                continue
+
+            signal = self._evaluate_book_imbalance(
+                market, token.token_id, book, other_book, market.fees_enabled,
+            )
+            if signal:
+                if not any(s.token_id == signal.token_id for s in signals):
+                    signals.append(signal)
+
+        if signals:
+            self._last_signal_time[market.condition_id] = utc_now()
         return signals
 
     def _evaluate_complement_deviation(
@@ -197,4 +225,91 @@ class StaleOddsStrategy(BaseStrategy):
                 rationale=f"spread_anomaly: spread={book.spread:.4f}, "
                           f"other_spread={other_book.spread:.4f}",
             )
+        return None
+
+    def _evaluate_book_imbalance(
+        self,
+        market: Market,
+        token_id: str,
+        book: OrderBookSnapshot,
+        other_book: OrderBookSnapshot,
+        fees_enabled: bool,
+    ) -> Signal | None:
+        """Detect when bid depth significantly exceeds ask depth (or vice versa).
+
+        Heavy bid depth with thin asks → price should be higher → BUY signal.
+        Heavy ask depth with thin bids → price should be lower → SELL signal.
+
+        Fair value is adjusted by the imbalance: midpoint is shifted toward
+        the heavier side. The shift magnitude is proportional to the log
+        of the imbalance ratio, scaled to a few cents.
+        """
+        bid_depth = book.bid_depth
+        ask_depth = book.ask_depth
+
+        if bid_depth <= 0 or ask_depth <= 0:
+            return None
+
+        imbalance_ratio = bid_depth / ask_depth
+
+        # Need at least 5:1 imbalance to avoid noise
+        if 0.2 < imbalance_ratio < 5.0:
+            return None
+
+        fees = 0.02 if fees_enabled else 0.0
+        midpoint = book.midpoint
+
+        # Imbalance-adjusted fair value: shift midpoint toward the heavier side
+        # A 3:1 bid/ask ratio shifts fair value up by ~1.5 cents
+        # A 5:1 ratio shifts by ~2.5 cents, capped at 5 cents
+        import math
+        shift = min(math.log2(max(imbalance_ratio, 1.0 / imbalance_ratio)) * 0.01, 0.05)
+
+        if imbalance_ratio >= 5.0:
+            # Heavy bids → fair value is above midpoint
+            fair_value = midpoint + shift
+            edge = fair_value - book.best_ask - fees - self._slippage_buffer
+            if edge >= self._min_edge:
+                confidence = min(imbalance_ratio / 10.0, 1.0)
+                if confidence < self._min_confidence:
+                    return None
+                return Signal(
+                    id=str(uuid4()),
+                    strategy=self.name,
+                    market_condition_id=market.condition_id,
+                    token_id=token_id,
+                    side=Side.BUY,
+                    fair_value=fair_value,
+                    market_price=book.best_ask,
+                    edge=edge,
+                    confidence=confidence,
+                    timestamp=utc_now(),
+                    rationale=f"book_imbalance: bid={bid_depth:.0f}, ask={ask_depth:.0f}, "
+                              f"ratio={imbalance_ratio:.1f}x, shift={shift:.4f}",
+                )
+
+        elif imbalance_ratio <= 0.2:
+            # Heavy asks → fair value is below midpoint
+            fair_value = midpoint - shift
+            edge = book.best_bid - fair_value - fees - self._slippage_buffer
+            if edge >= self._min_edge:
+                inv_ratio = 1.0 / imbalance_ratio
+                confidence = min(inv_ratio / 10.0, 1.0)
+                if confidence < self._min_confidence:
+                    return None
+                return Signal(
+                    id=str(uuid4()),
+                    strategy=self.name,
+                    market_condition_id=market.condition_id,
+                    token_id=token_id,
+                    side=Side.SELL,
+                    fair_value=fair_value,
+                    market_price=book.best_bid,
+                    edge=edge,
+                    confidence=confidence,
+                    timestamp=utc_now(),
+                    rationale=f"book_imbalance: bid={bid_depth:.0f}, ask={ask_depth:.0f}, "
+                              f"ratio={imbalance_ratio:.1f}x, shift={shift:.4f}",
+                )
+
         return None

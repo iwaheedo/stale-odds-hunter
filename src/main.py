@@ -46,7 +46,7 @@ async def run_bot() -> None:
         logger.warning("Geoblock detected — continuing in paper mode, some data may be limited")
 
     # Build services
-    market_state = MarketStateService(store, event_bus)
+    market_state = MarketStateService(store, event_bus, http_client=poly_client)
     ws_client = PolymarketWebSocket(event_bus, settings)
     discovery = MarketDiscoveryService(poly_client, settings, event_bus)
     risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
