@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    command: python -m src.main run
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    env_file: .env
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: streamlit run src/dashboard/streamlit_app.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    depends_on:
+      - app
+    restart: unless-stopped

@@ -1,0 +1,24 @@
+app_name: stale-odds-hunter
+mode: paper  # paper | live
+
+# Polling fallback when WebSocket is down
+market_data_poll_interval_sec: 30
+
+# WebSocket settings
+ws_reconnect_sec: 3
+ws_ping_interval_sec: 10
+
+# Database paths
+sqlite_db_path: data/sqlite/stale_odds_hunter.db
+duckdb_path: data/duckdb/analytics.duckdb
+
+# Control API
+api_host: "127.0.0.1"
+api_port: 8000
+
+# Dashboard
+dashboard_enabled: true
+
+# Logging
+log_level: INFO
+log_format: json  # json | text

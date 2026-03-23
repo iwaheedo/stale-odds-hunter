@@ -1,0 +1,23 @@
+# Market universe configuration
+
+# Only track markets in these categories (empty = all)
+categories_whitelist: []
+
+# Track specific markets by slug (empty = discover automatically)
+slugs_whitelist: []
+
+# Never track these slugs
+slugs_blacklist: []
+
+# Filters
+min_liquidity: 1000.0
+max_spread: 0.15
+min_volume_24h: 500.0
+
+# Market type filters
+exclude_sports: false
+exclude_fee_enabled: false
+binary_only: true
+
+# Maximum markets to track simultaneously
+max_tracked_markets: 50
