@@ -14,23 +14,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PYTHON = sys.executable
 
 # --- Configuration ---
-# On Streamlit Cloud, /mount/src/ is read-only. Use /tmp for DB.
-# Test actual writability, not just directory existence.
-def _detect_db_path() -> str:
-    local_dir = PROJECT_ROOT / "data" / "sqlite"
-    try:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        test_file = local_dir / ".write_test"
-        test_file.write_text("ok")
-        test_file.unlink()
-        return str(local_dir / "stale_odds_hunter.db")
-    except OSError:
-        # Read-only filesystem — use /tmp
-        tmp_dir = Path("/tmp/soh/sqlite")
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        return str(tmp_dir / "stale_odds_hunter.db")
-
-DB_PATH = os.environ.get("SOH_SQLITE_PATH", _detect_db_path())
+# Always use /tmp for SQLite. Streamlit Cloud's /mount/src/ allows basic
+# file ops but SQLite WAL/journal fails. /tmp is real writable tmpfs.
+_DB_DIR = Path("/tmp/soh/sqlite")
+_DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = os.environ.get("SOH_SQLITE_PATH", str(_DB_DIR / "stale_odds_hunter.db"))
 
 # --- Apple-Inspired CSS ---
 CUSTOM_CSS = """
