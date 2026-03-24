@@ -88,7 +88,11 @@ def _thread_target(stop_event: asyncio.Event, db_path: str, project_root: str) -
         importlib.reload(main_mod)
 
         log_lines.append("Calling run_bot_headless()...")
-        loop.run_until_complete(main_mod.run_bot_headless(stop_event=stop_event))
+
+        # Pass log_lines so the bot can write directly (backup for logging handler)
+        loop.run_until_complete(
+            main_mod.run_bot_headless(stop_event=stop_event, log_lines=log_lines)
+        )
         log_lines.append("run_bot_headless returned (unexpected)")
 
     except asyncio.CancelledError:

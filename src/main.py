@@ -28,33 +28,42 @@ if TYPE_CHECKING:
     from src.strategies.base import BaseStrategy
 
 
-async def run_bot_headless(stop_event: asyncio.Event | None = None,
-                          log_callback: object | None = None) -> None:
-    """Run the bot without FastAPI server — suitable for embedding in Streamlit.
+async def run_bot_headless(
+    stop_event: asyncio.Event | None = None,
+    log_lines: list[str] | None = None,
+) -> None:
+    """Run the bot without FastAPI server — suitable for embedding in Streamlit."""
 
-    Args:
-        stop_event: Set this event to trigger graceful shutdown.
-        log_callback: Optional callable(str) for log lines.
-    """
+    def _log(msg: str) -> None:
+        """Write directly to log_lines AND to the logger."""
+        if log_lines is not None:
+            log_lines.append(msg)
+
     settings = load_settings()
     setup_logging(settings.app.log_level, settings.app.log_format)
     logger = get_logger("main")
+    _log(f"Settings loaded: mode={settings.app.mode}, db={settings.app.sqlite_db_path}")
     logger.info("Starting Stale Odds Hunter (headless) in %s mode", settings.app.mode)
 
     event_bus = EventBus()
     store = SQLiteStore(settings.app.sqlite_db_path)
+    _log(f"Initializing SQLite at {settings.app.sqlite_db_path}...")
     await store.initialize()
+    _log("SQLite initialized OK")
 
     http_client = httpx.AsyncClient(timeout=15.0)
     poly_client = PolymarketPublicClient(http_client)
 
+    _log("Checking geoblock...")
     blocked = await check_geoblock(http_client)
+    _log(f"Geoblock: {'BLOCKED' if blocked else 'OK'}")
     if blocked:
         logger.warning("Geoblock detected — continuing in paper mode")
 
     market_state = MarketStateService(store, event_bus, http_client=poly_client)
     ws_client = PolymarketWebSocket(event_bus, settings)
     discovery = MarketDiscoveryService(poly_client, settings, event_bus)
+    _log("Services created, starting tasks...")
     risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
     portfolio = PortfolioEngine(store, event_bus)
 
@@ -97,9 +106,11 @@ async def run_bot_headless(stop_event: asyncio.Event | None = None,
     def start_all() -> None:
         for name, factory in task_defs.items():
             running_tasks[name] = asyncio.create_task(_resilient_task(name, factory), name=name)
+        _log(f"Started {len(running_tasks)} tasks: {list(running_tasks.keys())}")
 
     async def _resilient_task(name: str, factory: object) -> None:
         """Wraps a task with restart-on-crash. Never lets one failure kill the bot."""
+        _log(f"Task '{name}' starting")
         restart_count = 0
         max_restarts = 50
         while restart_count < max_restarts:
@@ -110,9 +121,11 @@ async def run_bot_headless(stop_event: asyncio.Event | None = None,
                 return
             except Exception as exc:
                 restart_count += 1
+                _log(f"Task '{name}' crashed (#{restart_count}): {type(exc).__name__}: {exc}")
                 logger.error("Task %s crashed (#%d): %s — restarting in 3s",
                              name, restart_count, exc)
                 await asyncio.sleep(3)
+        _log(f"Task '{name}' gave up after {max_restarts} restarts")
         logger.error("Task %s exceeded max restarts (%d), giving up", name, max_restarts)
 
     start_all()
