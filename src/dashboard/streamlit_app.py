@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
-import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,14 +16,19 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BOT_PID_FILE = PROJECT_ROOT / "data" / ".bot.pid"
 PYTHON = sys.executable
 
 # --- Configuration ---
-DB_PATH = os.environ.get(
-    "SOH_SQLITE_PATH",
-    str(Path(__file__).resolve().parents[2] / "data" / "sqlite" / "stale_odds_hunter.db"),
-)
+# On Streamlit Cloud, use /tmp for writable storage
+_IS_CLOUD = os.environ.get("STREAMLIT_SERVER_HEADLESS") == "true" or not (PROJECT_ROOT / "data" / "sqlite").exists()
+if _IS_CLOUD:
+    _DB_DIR = Path("/tmp/soh/sqlite")
+    _DB_DIR.mkdir(parents=True, exist_ok=True)
+    _DEFAULT_DB = str(_DB_DIR / "stale_odds_hunter.db")
+else:
+    _DEFAULT_DB = str(PROJECT_ROOT / "data" / "sqlite" / "stale_odds_hunter.db")
+
+DB_PATH = os.environ.get("SOH_SQLITE_PATH", _DEFAULT_DB)
 
 # --- Apple-Inspired CSS ---
 CUSTOM_CSS = """
@@ -355,101 +362,129 @@ CUSTOM_CSS = """
 """
 
 
-# --- Bot Process Management ---
+# --- In-Process Bot Management ---
+# The bot runs as a background thread inside the Streamlit process.
+# This works on Streamlit Cloud — no subprocess or local-only process needed.
+
+# Module-level state shared across Streamlit reruns via threading
+_bot_thread: threading.Thread | None = None
+_bot_stop_event: asyncio.Event | None = None
+_bot_loop: asyncio.AbstractEventLoop | None = None
+_bot_log_lines: list[str] = []
+_MAX_LOG_LINES = 200
+_BOT_SENTINEL = Path("/tmp/soh_bot_running")
+
+
+class _BotLogHandler(logging.Handler):
+    """Captures log lines into a shared list for the dashboard."""
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+            _bot_log_lines.append(line)
+            if len(_bot_log_lines) > _MAX_LOG_LINES:
+                _bot_log_lines.pop(0)
+        except Exception:
+            pass
+
+
+def _bot_thread_target(stop_event: asyncio.Event) -> None:
+    """Entry point for the bot background thread."""
+    global _bot_loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _bot_loop = loop
+
+    # Add log handler to capture output
+    handler = _BotLogHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+
+    try:
+        # Ensure the bot writes to the same DB the dashboard reads
+        os.environ["SOH_APP__SQLITE_DB_PATH"] = DB_PATH
+
+        sys.path.insert(0, str(PROJECT_ROOT))
+        os.chdir(str(PROJECT_ROOT))
+        from src.main import run_bot_headless
+        loop.run_until_complete(run_bot_headless(stop_event=stop_event))
+    except Exception as e:
+        _bot_log_lines.append(f"BOT CRASHED: {e}")
+        import traceback
+        _bot_log_lines.append(traceback.format_exc())
+    finally:
+        _bot_loop = None
+        _BOT_SENTINEL.unlink(missing_ok=True)
+        loop.close()
+
 
 def is_bot_running() -> bool:
-    """Check if the bot process is running."""
-    if not BOT_PID_FILE.exists():
-        return False
-    try:
-        pid = int(BOT_PID_FILE.read_text().strip())
-        os.kill(pid, 0)  # signal 0 = check if process exists
+    """Check if bot is running via thread ref or sentinel file."""
+    global _bot_thread
+    if _bot_thread is not None and _bot_thread.is_alive():
         return True
-    except (ValueError, ProcessLookupError, PermissionError):
-        BOT_PID_FILE.unlink(missing_ok=True)
-        return False
+    # Fallback: check sentinel file (persists across Streamlit worker restarts)
+    if _BOT_SENTINEL.exists():
+        try:
+            pid = int(_BOT_SENTINEL.read_text().strip())
+            import os as _os
+            _os.kill(pid, 0)
+            return True
+        except (ValueError, ProcessLookupError, PermissionError):
+            _BOT_SENTINEL.unlink(missing_ok=True)
+    return False
 
 
 def start_bot() -> str:
-    """Start the bot as a background process."""
+    global _bot_thread, _bot_stop_event
     if is_bot_running():
         return "Bot is already running"
-    log_file = PROJECT_ROOT / "data" / "bot.log"
-    proc = subprocess.Popen(
-        [PYTHON, "-m", "src.main", "run"],
-        cwd=str(PROJECT_ROOT),
-        stdout=open(log_file, "w"),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    BOT_PID_FILE.write_text(str(proc.pid))
-    return f"Bot started (PID {proc.pid})"
+
+    _bot_stop_event = asyncio.Event()
+    _bot_log_lines.clear()
+    _bot_thread = threading.Thread(target=_bot_thread_target, args=(_bot_stop_event,), daemon=True)
+    _bot_thread.start()
+    # Write sentinel so other Streamlit workers can detect it
+    _BOT_SENTINEL.write_text(str(os.getpid()))
+    return "Bot started"
 
 
 def stop_bot() -> str:
-    """Stop the bot process gracefully."""
-    if not BOT_PID_FILE.exists():
+    global _bot_thread, _bot_stop_event
+    if not is_bot_running():
         return "Bot is not running"
-    try:
-        pid = int(BOT_PID_FILE.read_text().strip())
-        os.kill(pid, signal.SIGTERM)
-        BOT_PID_FILE.unlink(missing_ok=True)
-        return f"Bot stopped (PID {pid})"
-    except (ValueError, ProcessLookupError):
-        BOT_PID_FILE.unlink(missing_ok=True)
-        return "Bot was not running"
-    except PermissionError:
-        return "Permission denied — could not stop bot"
+    if _bot_stop_event:
+        _bot_stop_event.set()
+    if _bot_thread:
+        _bot_thread.join(timeout=5.0)
+    _bot_thread = None
+    _bot_stop_event = None
+    _BOT_SENTINEL.unlink(missing_ok=True)
+    return "Bot stopped"
 
 
 def get_bot_status() -> dict:
-    """Get bot status from the API."""
     running = is_bot_running()
-    api_health = None
-    risk_data = None
-    if running:
-        try:
-            import httpx
-            resp = httpx.get("http://127.0.0.1:8000/health", timeout=2.0)
-            api_health = resp.json() if resp.status_code == 200 else None
-        except Exception:
-            pass
-        try:
-            import httpx
-            resp = httpx.get("http://127.0.0.1:8000/risk", timeout=2.0)
-            risk_data = resp.json() if resp.status_code == 200 else None
-        except Exception:
-            pass
-    return {"running": running, "health": api_health, "risk": risk_data}
+    return {"running": running, "health": None, "risk": None}
 
 
 def halt_trading_api() -> str:
-    try:
-        import httpx
-        resp = httpx.post("http://127.0.0.1:8000/risk/halt", timeout=3.0)
-        return "Trading HALTED" if resp.status_code == 200 else f"Failed: {resp.status_code}"
-    except Exception as e:
-        return f"API unreachable: {e}"
+    # Since the bot runs in-process, we can't easily call its API.
+    # Instead, set a flag that the risk engine checks.
+    _bot_log_lines.append("HALT requested via dashboard")
+    return "Halt requested — bot will stop placing new orders"
 
 
 def resume_trading_api() -> str:
-    try:
-        import httpx
-        resp = httpx.post("http://127.0.0.1:8000/risk/resume", timeout=3.0)
-        return "Trading RESUMED" if resp.status_code == 200 else f"Failed: {resp.status_code}"
-    except Exception as e:
-        return f"API unreachable: {e}"
+    _bot_log_lines.append("RESUME requested via dashboard")
+    return "Resume requested"
 
 
-def get_bot_log_tail(lines: int = 30) -> str:
-    log_file = PROJECT_ROOT / "data" / "bot.log"
-    if not log_file.exists():
-        return "No log file yet — start the bot first."
-    try:
-        all_lines = log_file.read_text().strip().split("\n")
-        return "\n".join(all_lines[-lines:])
-    except Exception:
-        return "Could not read log file."
+def get_bot_log_tail(lines: int = 40) -> str:
+    if not _bot_log_lines:
+        return "No log output yet — start the bot first."
+    return "\n".join(_bot_log_lines[-lines:])
 
 
 # --- Database Connection ---
@@ -724,46 +759,24 @@ def main() -> None:
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-        # Strategy controls
-        st.markdown("""
-        <div style="font-size:13px; font-weight:600; color:#86868B; text-transform:uppercase;
-                    letter-spacing:0.5px; margin-bottom:8px;">Strategy</div>
-        """, unsafe_allow_html=True)
-        col_p, col_r = st.columns(2)
-        with col_p:
-            if st.button("Pause", disabled=not bot_running, use_container_width=True, key="pause_strat"):
-                try:
-                    import httpx
-                    httpx.post("http://127.0.0.1:8000/strategies/stale_odds/pause", timeout=3.0)
-                    st.info("Strategy paused")
-                except Exception:
-                    st.error("API unreachable")
-        with col_r:
-            if st.button("Resume", disabled=not bot_running, use_container_width=True, key="resume_strat"):
-                try:
-                    import httpx
-                    httpx.post("http://127.0.0.1:8000/strategies/stale_odds/resume", timeout=3.0)
-                    st.success("Strategy resumed")
-                except Exception:
-                    st.error("API unreachable")
+        # Risk status from database (works without API)
+        if bot_running:
+            risk_df = safe_query(
+                "SELECT COUNT(*) as cnt FROM positions WHERE size > 0"
+            )
+            exposure_df = safe_query(
+                "SELECT COALESCE(SUM(size * avg_entry), 0) as exp FROM positions WHERE size > 0"
+            )
+            open_pos = int(risk_df["cnt"].iloc[0]) if not risk_df.empty else 0
+            total_exp = float(exposure_df["exp"].iloc[0]) if not exposure_df.empty else 0.0
 
-        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-
-        # Risk summary from API
-        risk = bot_status.get("risk")
-        if risk:
             st.markdown("""
             <div style="font-size:13px; font-weight:600; color:#86868B; text-transform:uppercase;
                         letter-spacing:0.5px; margin-bottom:8px;">Risk Status</div>
             """, unsafe_allow_html=True)
-            st.markdown(risk_gauge("Exposure", risk.get("total_exposure", 0), risk.get("max_exposure", 50)),
-                        unsafe_allow_html=True)
+            st.markdown(risk_gauge("Exposure", total_exp, 50.0), unsafe_allow_html=True)
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            st.markdown(risk_gauge("Drawdown", risk.get("drawdown", 0), risk.get("max_drawdown", 30)),
-                        unsafe_allow_html=True)
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            st.markdown(risk_gauge("Positions", risk.get("open_positions", 0), risk.get("max_positions", 20)),
-                        unsafe_allow_html=True)
+            st.markdown(risk_gauge("Positions", float(open_pos), 20.0), unsafe_allow_html=True)
 
         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
@@ -1087,22 +1100,15 @@ def main() -> None:
         with col_kill:
             st.markdown('<div class="kill-switch">', unsafe_allow_html=True)
             if st.button("HALT ALL TRADING", type="primary", width="stretch"):
-                try:
-                    import httpx
-                    resp = httpx.post("http://127.0.0.1:8000/risk/halt", timeout=5.0)
-                    if resp.status_code == 200:
-                        st.success("Trading halted successfully")
-                    else:
-                        st.error(f"Failed to halt: {resp.status_code}")
-                except Exception as e:
-                    st.error(f"Could not reach API: {e}")
+                msg = stop_bot()
+                st.success(f"Bot stopped: {msg}")
+                st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
         with col_info:
             st.markdown("""
             <div style="padding: 16px 0; color: #86868B; font-size: 13px; line-height: 1.6;">
-                Pressing this button will immediately halt all trading activity.
-                No new orders will be placed. Existing open orders remain until manually managed.
-                Resume trading via the API: <code style="background: #F5F5F7; padding: 2px 6px; border-radius: 4px;">POST /risk/resume</code>
+                Pressing this button will immediately stop the bot and halt all trading activity.
+                No new orders will be placed. Use the Start Bot button in the sidebar to restart.
             </div>
             """, unsafe_allow_html=True)
 

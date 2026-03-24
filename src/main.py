@@ -24,6 +24,89 @@ from src.strategies.stale_odds import StaleOddsStrategy
 from src.utils.logging import get_logger, setup_logging
 
 
+async def run_bot_headless(stop_event: asyncio.Event | None = None,
+                          log_callback: object | None = None) -> None:
+    """Run the bot without FastAPI server — suitable for embedding in Streamlit.
+
+    Args:
+        stop_event: Set this event to trigger graceful shutdown.
+        log_callback: Optional callable(str) for log lines.
+    """
+    settings = load_settings()
+    setup_logging(settings.app.log_level, settings.app.log_format)
+    logger = get_logger("main")
+    logger.info("Starting Stale Odds Hunter (headless) in %s mode", settings.app.mode)
+
+    event_bus = EventBus()
+    store = SQLiteStore(settings.app.sqlite_db_path)
+    await store.initialize()
+
+    http_client = httpx.AsyncClient(timeout=15.0)
+    poly_client = PolymarketPublicClient(http_client)
+
+    blocked = await check_geoblock(http_client)
+    if blocked:
+        logger.warning("Geoblock detected — continuing in paper mode")
+
+    market_state = MarketStateService(store, event_bus, http_client=poly_client)
+    ws_client = PolymarketWebSocket(event_bus, settings)
+    discovery = MarketDiscoveryService(poly_client, settings, event_bus)
+    risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
+    portfolio = PortfolioEngine(store, event_bus)
+
+    strategies = []
+    if "stale_odds" in settings.strategies.enabled_strategies:
+        strategies.append(StaleOddsStrategy(settings.strategies))
+    logger.info("Loaded strategies: %s", [s.name for s in strategies])
+
+    signal_engine = SignalEngine(strategies, market_state, store, event_bus)
+    execution = PaperExecutionService(market_state, risk_engine, store, event_bus, settings)
+
+    async def on_market_discovered() -> None:
+        q = event_bus.subscribe(MarketDiscovered)
+        while True:
+            event_obj: MarketDiscovered = await q.get()
+            token_ids = [t.token_id for t in event_obj.market.tokens]
+            await ws_client.subscribe(token_ids)
+
+    async def wait_for_stop() -> None:
+        if stop_event:
+            while not stop_event.is_set():
+                await asyncio.sleep(0.5)
+            raise asyncio.CancelledError("Stop requested")
+
+    tasks = [
+        asyncio.create_task(discovery.run(), name="discovery"),
+        asyncio.create_task(ws_client.run(), name="websocket"),
+        asyncio.create_task(market_state.run(), name="market_state"),
+        asyncio.create_task(signal_engine.run(), name="signal_engine"),
+        asyncio.create_task(execution.run(), name="execution"),
+        asyncio.create_task(portfolio.run(), name="portfolio"),
+        asyncio.create_task(risk_engine.run_monitor(), name="risk_monitor"),
+        asyncio.create_task(on_market_discovered(), name="ws_subscriber"),
+        asyncio.create_task(wait_for_stop(), name="stop_watcher"),
+    ]
+
+    logger.info("All services started (headless mode)")
+
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for t in done:
+            exc = t.exception()
+            if exc and not isinstance(exc, asyncio.CancelledError):
+                logger.error("Task %s failed: %s", t.get_name(), exc)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        logger.info("Shutting down (headless)...")
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await http_client.aclose()
+        await store.close()
+        logger.info("Shutdown complete")
+
+
 async def run_bot() -> None:
     settings = load_settings()
     setup_logging(settings.app.log_level, settings.app.log_format)
