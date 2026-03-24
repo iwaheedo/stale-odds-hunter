@@ -57,13 +57,25 @@ def _thread_target(stop_event: asyncio.Event, db_path: str, project_root: str) -
         log_lines.append(f"Project: {project_root}")
         log_lines.append(f"CWD: {os.getcwd()}")
 
-        # Ensure writable DB directory
+        # Ensure writable DB directory — actually test writing, not just permissions
         db_dir = Path(db_path).parent
-        db_dir.mkdir(parents=True, exist_ok=True)
-        log_lines.append(f"DB dir writable: {os.access(str(db_dir), os.W_OK)}")
+        try:
+            db_dir.mkdir(parents=True, exist_ok=True)
+            test_file = db_dir / ".write_test"
+            test_file.write_text("ok")
+            test_file.unlink()
+            log_lines.append("DB dir writable: True (tested)")
+        except OSError:
+            # Read-only filesystem (e.g. Streamlit Cloud) — use /tmp
+            old_path = db_path
+            db_dir = Path("/tmp/soh/sqlite")
+            db_dir.mkdir(parents=True, exist_ok=True)
+            db_path = str(db_dir / "stale_odds_hunter.db")
+            log_lines.append(f"DB dir NOT writable, switched to: {db_path} (was {old_path})")
 
         # Set env for settings loader
         os.environ["SOH_APP__SQLITE_DB_PATH"] = db_path
+        log_lines.append(f"Final DB path: {db_path}")
 
         # Ensure project root is importable
         if project_root not in sys.path:
