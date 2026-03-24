@@ -75,33 +75,58 @@ async def run_bot_headless(stop_event: asyncio.Event | None = None,
                 await asyncio.sleep(0.5)
             raise asyncio.CancelledError("Stop requested")
 
-    tasks = [
-        asyncio.create_task(discovery.run(), name="discovery"),
-        asyncio.create_task(ws_client.run(), name="websocket"),
-        asyncio.create_task(market_state.run(), name="market_state"),
-        asyncio.create_task(signal_engine.run(), name="signal_engine"),
-        asyncio.create_task(execution.run(), name="execution"),
-        asyncio.create_task(portfolio.run(), name="portfolio"),
-        asyncio.create_task(risk_engine.run_monitor(), name="risk_monitor"),
-        asyncio.create_task(on_market_discovered(), name="ws_subscriber"),
-        asyncio.create_task(wait_for_stop(), name="stop_watcher"),
-    ]
+    # Define tasks as (name, coroutine_factory) so we can restart them
+    task_defs: dict[str, object] = {
+        "discovery": discovery.run,
+        "websocket": ws_client.run,
+        "market_state": market_state.run,
+        "signal_engine": signal_engine.run,
+        "execution": execution.run,
+        "portfolio": portfolio.run,
+        "risk_monitor": risk_engine.run_monitor,
+        "ws_subscriber": on_market_discovered,
+    }
+    running_tasks: dict[str, asyncio.Task] = {}
 
-    logger.info("All services started (headless mode)")
+    def start_all() -> None:
+        for name, factory in task_defs.items():
+            running_tasks[name] = asyncio.create_task(_resilient_task(name, factory), name=name)
+
+    async def _resilient_task(name: str, factory: object) -> None:
+        """Wraps a task with restart-on-crash. Never lets one failure kill the bot."""
+        restart_count = 0
+        max_restarts = 50
+        while restart_count < max_restarts:
+            try:
+                await factory()  # type: ignore[operator]
+            except asyncio.CancelledError:
+                logger.info("Task %s cancelled", name)
+                return
+            except Exception as exc:
+                restart_count += 1
+                logger.error("Task %s crashed (#%d): %s — restarting in 3s",
+                             name, restart_count, exc)
+                await asyncio.sleep(3)
+        logger.error("Task %s exceeded max restarts (%d), giving up", name, max_restarts)
+
+    start_all()
+
+    # Stop watcher (only task that can actually end the bot)
+    stop_task = asyncio.create_task(wait_for_stop(), name="stop_watcher")
+
+    logger.info("All services started (headless mode, resilient)")
 
     try:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-        for t in done:
-            exc = t.exception()
-            if exc and not isinstance(exc, asyncio.CancelledError):
-                logger.error("Task %s failed: %s", t.get_name(), exc)
+        # Wait for stop signal — individual tasks restart on their own
+        await stop_task
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         logger.info("Shutting down (headless)...")
-        for t in tasks:
+        for t in running_tasks.values():
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        stop_task.cancel()
+        await asyncio.gather(*running_tasks.values(), stop_task, return_exceptions=True)
         await http_client.aclose()
         await store.close()
         logger.info("Shutdown complete")

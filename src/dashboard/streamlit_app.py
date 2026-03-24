@@ -407,16 +407,28 @@ def _bot_thread_target(stop_event: asyncio.Event) -> None:
 
         sys.path.insert(0, str(PROJECT_ROOT))
         os.chdir(str(PROJECT_ROOT))
-        from src.main import run_bot_headless
-        loop.run_until_complete(run_bot_headless(stop_event=stop_event))
+
+        # Reimport to pick up fresh module (avoids stale state between restarts)
+        import importlib
+        import src.main as main_mod
+        importlib.reload(main_mod)
+
+        loop.run_until_complete(main_mod.run_bot_headless(stop_event=stop_event))
+    except asyncio.CancelledError:
+        _bot_log_lines.append("Bot stopped (cancelled)")
     except Exception as e:
-        _bot_log_lines.append(f"BOT CRASHED: {e}")
+        _bot_log_lines.append(f"BOT CRASHED: {type(e).__name__}: {e}")
         import traceback
-        _bot_log_lines.append(traceback.format_exc())
+        for line in traceback.format_exc().split("\n")[-5:]:
+            if line.strip():
+                _bot_log_lines.append(line)
     finally:
         _bot_loop = None
         _BOT_SENTINEL.unlink(missing_ok=True)
-        loop.close()
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
 def is_bot_running() -> bool:
