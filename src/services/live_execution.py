@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from src.adapters.geoblock import check_geoblock
 from src.adapters.polymarket_live import PolymarketLiveClient
-from src.domain.enums import OrderStatus, Side
+from src.domain.enums import OrderStatus
 from src.domain.events import EventBus, FillOccurred, SignalGenerated
 from src.domain.models import Fill, Order, Signal
-from src.services.market_state import MarketStateService
-from src.services.risk_engine import RiskEngine
-from src.settings import Settings
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.logging import get_logger
 from src.utils.time import utc_now
+
+if TYPE_CHECKING:
+    from src.services.market_state import MarketStateService
+    from src.services.risk_engine import RiskEngine
+    from src.settings import Settings
+    from src.storage.sqlite_store import SQLiteStore
 
 logger = get_logger("services.live_execution")
 

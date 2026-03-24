@@ -80,7 +80,7 @@ class PolymarketLiveClient:
         try:
             # The heartbeat endpoint expects the previous heartbeat_id
             result = await self._run_sync(
-                self._client._post,  # type: ignore
+                self._client._post,
                 "v1/heartbeats",
                 {"heartbeat_id": self._heartbeat_id},
             )

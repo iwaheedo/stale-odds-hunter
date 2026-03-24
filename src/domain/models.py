@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from src.domain.enums import OrderStatus, Side
@@ -95,7 +95,7 @@ class Order:
     order_type: str = "GTC"
     status: OrderStatus = OrderStatus.PENDING
     is_paper: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     filled_at: datetime | None = None
     fill_price: float | None = None
     fill_size: float | None = None
@@ -109,7 +109,7 @@ class Fill:
     fill_price: float
     fill_size: float
     fee_estimate: float = 0.0
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     id: str = field(default_factory=lambda: str(uuid4()))
 
 

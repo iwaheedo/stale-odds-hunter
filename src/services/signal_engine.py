@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from src.domain.events import EventBus, OrderBookUpdated, SignalGenerated
-from src.services.market_state import MarketStateService
-from src.storage.sqlite_store import SQLiteStore
-from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
-from src.utils.time import utc_now, seconds_since
+from src.utils.time import seconds_since, utc_now
+
+if TYPE_CHECKING:
+    from src.services.market_state import MarketStateService
+    from src.storage.sqlite_store import SQLiteStore
+    from src.strategies.base import BaseStrategy
 
 logger = get_logger("services.signal_engine")
 

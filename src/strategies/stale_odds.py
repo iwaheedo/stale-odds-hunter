@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from src.domain.enums import Side
 from src.domain.models import Market, OrderBookSnapshot, Position, Signal
-from src.settings import StrategiesConfig
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
 from src.utils.maths import calculate_edge, complement_fair_value
-from src.utils.time import seconds_since
-from src.utils.time import utc_now
+from src.utils.time import seconds_since, utc_now
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from src.settings import StrategiesConfig
 
 logger = get_logger("strategies.stale_odds")
 
@@ -93,9 +96,8 @@ class StaleOddsStrategy(BaseStrategy):
             signal = self._evaluate_spread_anomaly(
                 market, token.token_id, book, other_book, market.fees_enabled,
             )
-            if signal:
-                if not any(s.token_id == signal.token_id for s in signals):
-                    signals.append(signal)
+            if signal and not any(s.token_id == signal.token_id for s in signals):
+                signals.append(signal)
 
         # Check 3: Book imbalance (bid depth >> ask depth or vice versa)
         for token in market.tokens:
@@ -110,9 +112,8 @@ class StaleOddsStrategy(BaseStrategy):
             signal = self._evaluate_book_imbalance(
                 market, token.token_id, book, other_book, market.fees_enabled,
             )
-            if signal:
-                if not any(s.token_id == signal.token_id for s in signals):
-                    signals.append(signal)
+            if signal and not any(s.token_id == signal.token_id for s in signals):
+                signals.append(signal)
 
         if signals:
             self._last_signal_time[market.condition_id] = utc_now()

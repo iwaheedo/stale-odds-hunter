@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING
 
 from src.domain.events import EventBus, OrderBookUpdated
 from src.domain.models import Order, RiskDecision, Signal
-from src.settings import RiskConfig
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.logging import get_logger
-from src.utils.time import utc_now, seconds_since
+from src.utils.time import seconds_since, utc_now
 
 if TYPE_CHECKING:
     from src.services.market_state import MarketStateService
+    from src.settings import RiskConfig
+    from src.storage.sqlite_store import SQLiteStore
 
 logger = get_logger("services.risk_engine")
 
@@ -30,7 +30,7 @@ class RiskEngine:
         config: RiskConfig,
         store: SQLiteStore,
         event_bus: EventBus | None = None,
-        market_state: "MarketStateService | None" = None,
+        market_state: MarketStateService | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -54,7 +54,7 @@ class RiskEngine:
     def halt_reason(self) -> str:
         return self._halt_reason
 
-    def set_market_state(self, market_state: "MarketStateService") -> None:
+    def set_market_state(self, market_state: MarketStateService) -> None:
         self._market_state = market_state
 
     def halt(self, reason: str) -> None:
@@ -135,7 +135,7 @@ class RiskEngine:
             try:
                 event: OrderBookUpdated = await asyncio.wait_for(book_q.get(), timeout=5.0)
                 self.record_book_update(event.snapshot.token_id)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await self._check_global_feed_health()
 
     async def _check_global_feed_health(self) -> None:
@@ -260,10 +260,7 @@ class RiskEngine:
             if not pm:
                 continue
             # Same category counts as correlated
-            if pm.category and pm.category == market.category:
-                corr_exp += pos.size * pos.avg_entry
-            # Same slug prefix (e.g. "will-trump-" markets) counts as correlated
-            elif market.slug and pm.slug and market.slug.split("-")[:2] == pm.slug.split("-")[:2]:
+            if pm.category and pm.category == market.category or market.slug and pm.slug and market.slug.split("-")[:2] == pm.slug.split("-")[:2]:
                 corr_exp += pos.size * pos.avg_entry
 
         proposed = corr_exp + order.size * order.price

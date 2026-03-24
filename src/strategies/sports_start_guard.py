@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from src.domain.models import Market, OrderBookSnapshot, Position, Signal
+from typing import TYPE_CHECKING
+
 from src.strategies.base import BaseStrategy
 from src.utils.logging import get_logger
 from src.utils.time import utc_now
+
+if TYPE_CHECKING:
+    from src.domain.models import Market, OrderBookSnapshot, Position, Signal
 
 logger = get_logger("strategies.sports_guard")
 

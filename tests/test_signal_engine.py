@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -14,7 +14,7 @@ def _make_book(token_id: str, best_bid: float, best_ask: float,
                bid_depth: float = 100, ask_depth: float = 100) -> OrderBookSnapshot:
     return OrderBookSnapshot(
         token_id=token_id,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         bids=[PriceLevel(price=best_bid, size=bid_depth)],
         asks=[PriceLevel(price=best_ask, size=ask_depth)],
     )

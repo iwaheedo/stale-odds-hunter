@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from src.domain.models import Fill, Market, OrderBookSnapshot, Signal, Order
-
+if TYPE_CHECKING:
+    from src.domain.models import Fill, Market, Order, OrderBookSnapshot, Signal
 
 # --- Event types ---
 

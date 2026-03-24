@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import sqlite3
-import subprocess
 import sys
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -402,33 +401,56 @@ def _bot_thread_target(stop_event: asyncio.Event) -> None:
     root_logger.setLevel(logging.INFO)
 
     try:
-        # Ensure the bot writes to the same DB the dashboard reads
+        _bot_log_lines.append("Bot thread starting...")
+
+        # Ensure writable paths exist for database
+        db_dir = Path(DB_PATH).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+        _bot_log_lines.append(f"DB path: {DB_PATH} (writable: {os.access(str(db_dir), os.W_OK)})")
+
+        # Set env so the bot uses the same DB the dashboard reads
         os.environ["SOH_APP__SQLITE_DB_PATH"] = DB_PATH
 
-        sys.path.insert(0, str(PROJECT_ROOT))
-        os.chdir(str(PROJECT_ROOT))
+        # Ensure config dir is accessible
+        config_dir = PROJECT_ROOT / "config"
+        _bot_log_lines.append(f"Config dir: {config_dir} (exists: {config_dir.exists()})")
+        if not config_dir.exists():
+            # Streamlit Cloud mounts at /mount/src/<repo-name>
+            for alt in [Path("/mount/src/stale-odds-hunter/config"), Path("/app/config")]:
+                if alt.exists():
+                    config_dir = alt
+                    _bot_log_lines.append(f"Using alt config: {alt}")
+                    break
 
-        # Reimport to pick up fresh module (avoids stale state between restarts)
+        sys.path.insert(0, str(PROJECT_ROOT))
+        try:
+            os.chdir(str(PROJECT_ROOT))
+        except OSError as exc:
+            _bot_log_lines.append(f"chdir failed: {exc} — using cwd: {os.getcwd()}")
+
+        # Reimport to pick up fresh module
         import importlib
+
         import src.main as main_mod
         importlib.reload(main_mod)
 
+        _bot_log_lines.append("Starting headless bot...")
         loop.run_until_complete(main_mod.run_bot_headless(stop_event=stop_event))
+        _bot_log_lines.append("Bot run_bot_headless returned (unexpected)")
     except asyncio.CancelledError:
         _bot_log_lines.append("Bot stopped (cancelled)")
     except Exception as e:
         _bot_log_lines.append(f"BOT CRASHED: {type(e).__name__}: {e}")
         import traceback
-        for line in traceback.format_exc().split("\n")[-5:]:
+        tb = traceback.format_exc()
+        for line in tb.split("\n"):
             if line.strip():
                 _bot_log_lines.append(line)
     finally:
         _bot_loop = None
         _BOT_SENTINEL.unlink(missing_ok=True)
-        try:
+        with contextlib.suppress(Exception):
             loop.close()
-        except Exception:
-            pass
 
 
 def is_bot_running() -> bool:
@@ -668,7 +690,7 @@ def get_order_stats() -> dict:
     )
     if df.empty:
         return {"total": 0, "filled": 0, "rejected": 0, "open": 0, "pending": 0}
-    stats = dict(zip(df["status"], df["cnt"]))
+    stats = dict(zip(df["status"], df["cnt"], strict=False))
     return {
         "total": int(df["cnt"].sum()),
         "filled": int(stats.get("FILLED", 0)),

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from src.domain.models import Market, OrderBookSnapshot, Position, Signal
+if TYPE_CHECKING:
+    from src.domain.models import Market, OrderBookSnapshot, Position, Signal
 
 
 class BaseStrategy(ABC):

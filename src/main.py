@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
+from typing import TYPE_CHECKING
 
 import httpx
 import uvicorn
@@ -10,7 +10,8 @@ import uvicorn
 from src.adapters.geoblock import check_geoblock
 from src.adapters.polymarket_public import PolymarketPublicClient
 from src.adapters.websocket_client import PolymarketWebSocket
-from src.api import app as fastapi_app, configure as configure_api
+from src.api import app as fastapi_app
+from src.api import configure as configure_api
 from src.domain.events import EventBus, MarketDiscovered
 from src.services.market_discovery import MarketDiscoveryService
 from src.services.market_state import MarketStateService
@@ -22,6 +23,9 @@ from src.settings import load_settings
 from src.storage.sqlite_store import SQLiteStore
 from src.strategies.stale_odds import StaleOddsStrategy
 from src.utils.logging import get_logger, setup_logging
+
+if TYPE_CHECKING:
+    from src.strategies.base import BaseStrategy
 
 
 async def run_bot_headless(stop_event: asyncio.Event | None = None,
@@ -54,13 +58,15 @@ async def run_bot_headless(stop_event: asyncio.Event | None = None,
     risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
     portfolio = PortfolioEngine(store, event_bus)
 
-    strategies = []
+    strategies: list[BaseStrategy] = []
     if "stale_odds" in settings.strategies.enabled_strategies:
         strategies.append(StaleOddsStrategy(settings.strategies))
     logger.info("Loaded strategies: %s", [s.name for s in strategies])
 
     signal_engine = SignalEngine(strategies, market_state, store, event_bus)
-    execution = PaperExecutionService(market_state, risk_engine, store, event_bus, settings)
+    execution: PaperExecutionService = PaperExecutionService(
+        market_state, risk_engine, store, event_bus, settings,
+    )
 
     async def on_market_discovered() -> None:
         q = event_bus.subscribe(MarketDiscovered)
@@ -161,7 +167,7 @@ async def run_bot() -> None:
     portfolio = PortfolioEngine(store, event_bus)
 
     # Build strategies
-    strategies = []
+    strategies: list[BaseStrategy] = []
     if "stale_odds" in settings.strategies.enabled_strategies:
         strategies.append(StaleOddsStrategy(settings.strategies))
     logger.info("Loaded strategies: %s", [s.name for s in strategies])
@@ -169,6 +175,7 @@ async def run_bot() -> None:
     signal_engine = SignalEngine(strategies, market_state, store, event_bus)
 
     # Execution — live or paper
+    execution: PaperExecutionService | object
     if settings.is_live:
         from src.services.live_execution import LiveExecutionService
         execution = LiveExecutionService(market_state, risk_engine, store, event_bus, settings)
@@ -242,14 +249,14 @@ async def discover_markets_once() -> None:
 async def run_backtest(strategy: str, date_from: str, date_to: str) -> None:
     settings = load_settings()
     setup_logging(settings.app.log_level, "text")
-    logger = get_logger("backtest")
+    get_logger("backtest")
 
     from src.services.backtest_engine import BacktestEngine
     store = SQLiteStore(settings.app.sqlite_db_path)
     await store.initialize()
 
-    strategies_list = []
-    if strategy == "stale_odds" or strategy == "all":
+    strategies_list: list[BaseStrategy] = []
+    if strategy in ("stale_odds", "all"):
         strategies_list.append(StaleOddsStrategy(settings.strategies))
 
     engine = BacktestEngine(store, strategies_list, settings)

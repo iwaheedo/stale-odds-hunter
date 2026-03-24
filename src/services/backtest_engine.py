@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
+from typing import TYPE_CHECKING
 
 from src.domain.enums import Side
-from src.domain.models import Market, OrderBookSnapshot, PriceLevel, Signal, Token
-from src.settings import Settings
-from src.storage.sqlite_store import SQLiteStore
-from src.strategies.base import BaseStrategy
+from src.domain.models import OrderBookSnapshot, PriceLevel, Signal
 from src.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from src.settings import Settings
+    from src.storage.sqlite_store import SQLiteStore
+    from src.strategies.base import BaseStrategy
 
 logger = get_logger("services.backtest")
 
@@ -61,6 +64,7 @@ class BacktestEngine:
             logger.warning("No snapshot data found in range %s → %s", date_from, date_to)
             return self._empty_result()
 
+        rows = list(rows)
         logger.info("Loaded %d snapshots for backtest", len(rows))
 
         # Simulate

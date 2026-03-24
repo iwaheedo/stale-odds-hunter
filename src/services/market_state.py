@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from src.domain.events import (
@@ -10,13 +10,13 @@ from src.domain.events import (
     OrderBookUpdated,
     TradeReceived,
 )
-from src.domain.models import Market, OrderBookSnapshot
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.logging import get_logger
 from src.utils.time import seconds_since, utc_now
 
 if TYPE_CHECKING:
     from src.adapters.polymarket_public import PolymarketPublicClient
+    from src.domain.models import Market, OrderBookSnapshot
+    from src.storage.sqlite_store import SQLiteStore
 
 logger = get_logger("services.market_state")
 
@@ -36,7 +36,7 @@ class MarketStateService:
         self,
         store: SQLiteStore,
         event_bus: EventBus,
-        http_client: "PolymarketPublicClient | None" = None,
+        http_client: PolymarketPublicClient | None = None,
     ) -> None:
         self._store = store
         self._bus = event_bus
@@ -111,7 +111,7 @@ class MarketStateService:
         last = self._last_persist.get(snap.token_id)
         if last and seconds_since(last) < SNAPSHOT_PERSIST_INTERVAL_SEC:
             return
-        self._last_persist[snap.token_id] = datetime.now(timezone.utc)
+        self._last_persist[snap.token_id] = datetime.now(UTC)
         await self._store.insert_orderbook_snapshot(snap)
 
     async def _poll_stale_books(self) -> None:

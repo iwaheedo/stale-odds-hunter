@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -191,7 +192,7 @@ class SQLiteStore:
              tokens_json, int(market.active), market.volume, market.volume_24h,
              market.liquidity, int(market.fees_enabled), int(market.neg_risk),
              market.end_date.isoformat() if market.end_date else None,
-             datetime.now(timezone.utc).isoformat()),
+             datetime.now(UTC).isoformat()),
         )
         await self.conn.commit()
 
@@ -210,10 +211,8 @@ class SQLiteStore:
                       for t in tokens_data]
             end_date = None
             if row[11]:
-                try:
+                with contextlib.suppress(ValueError):
                     end_date = datetime.fromisoformat(row[11])
-                except ValueError:
-                    pass
             markets.append(Market(
                 condition_id=row[0], question=row[1], slug=row[2], category=row[3],
                 tokens=tokens, active=bool(row[5]), volume=row[6], volume_24h=row[7],
@@ -353,7 +352,7 @@ class SQLiteStore:
                                 details: dict) -> None:
         await self.conn.execute(
             "INSERT INTO risk_events (timestamp, severity, event_type, details_json) VALUES (?, ?, ?, ?)",
-            (datetime.now(timezone.utc).isoformat(), severity, event_type, json.dumps(details)),
+            (datetime.now(UTC).isoformat(), severity, event_type, json.dumps(details)),
         )
         await self.conn.commit()
 
@@ -362,6 +361,6 @@ class SQLiteStore:
     async def save_config_version(self, config_blob: str) -> None:
         await self.conn.execute(
             "INSERT INTO config_versions (timestamp, config_blob) VALUES (?, ?)",
-            (datetime.now(timezone.utc).isoformat(), config_blob),
+            (datetime.now(UTC).isoformat(), config_blob),
         )
         await self.conn.commit()

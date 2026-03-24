@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import TYPE_CHECKING, Any
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
 from src.domain.events import EventBus, OrderBookUpdated, TradeReceived
 from src.domain.models import OrderBookSnapshot, PriceLevel
-from src.settings import Settings
 from src.utils.logging import get_logger
 from src.utils.time import utc_now
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from src.settings import Settings
 
 logger = get_logger("adapters.websocket")
 
@@ -24,7 +29,7 @@ class PolymarketWebSocket:
         self._bus = event_bus
         self._settings = settings
         self._subscribed_assets: set[str] = set()
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: Any = None  # websockets client protocol
         self._connected = False
         self._last_message_at = utc_now()
 
@@ -33,7 +38,7 @@ class PolymarketWebSocket:
         return self._connected
 
     @property
-    def last_message_at(self):  # noqa: ANN201
+    def last_message_at(self) -> datetime:  # noqa: ANN201
         return self._last_message_at
 
     @property
@@ -108,7 +113,7 @@ class PolymarketWebSocket:
             await self._send_subscribe(list(self._subscribed_assets))
             logger.info("Re-subscribed to %d tokens after reconnect", len(self._subscribed_assets))
 
-    async def _ping_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+    async def _ping_loop(self, ws: Any) -> None:
         interval = self._settings.app.ws_ping_interval_sec
         while True:
             await asyncio.sleep(interval)
@@ -117,7 +122,7 @@ class PolymarketWebSocket:
             except ConnectionClosed:
                 return
 
-    async def _read_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
+    async def _read_loop(self, ws: Any) -> None:
         async for raw in ws:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="replace")

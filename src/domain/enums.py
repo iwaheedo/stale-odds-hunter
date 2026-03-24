@@ -1,12 +1,12 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Side(str, Enum):
+class Side(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
 
 
-class OrderStatus(str, Enum):
+class OrderStatus(StrEnum):
     PENDING = "PENDING"
     OPEN = "OPEN"
     FILLED = "FILLED"
@@ -15,19 +15,19 @@ class OrderStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
-class OrderType(str, Enum):
+class OrderType(StrEnum):
     GTC = "GTC"
     GTD = "GTD"
     FOK = "FOK"
     FAK = "FAK"
 
 
-class TradingMode(str, Enum):
+class TradingMode(StrEnum):
     PAPER = "paper"
     LIVE = "live"
 
 
-class SignalAction(str, Enum):
+class SignalAction(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"

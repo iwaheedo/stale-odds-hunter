@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def timestamp_ms() -> int:
@@ -12,7 +12,7 @@ def timestamp_ms() -> int:
 
 
 def from_timestamp_ms(ts: int) -> datetime:
-    return datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(ts / 1000, tz=UTC)
 
 
 def seconds_since(dt: datetime) -> float:

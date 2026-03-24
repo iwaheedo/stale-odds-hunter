@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from src.domain.enums import OrderStatus, Side
-from src.domain.events import EventBus, FillOccurred, OrderBookUpdated, SignalGenerated
+from src.domain.events import EventBus, FillOccurred, SignalGenerated
 from src.domain.models import Fill, Order, Position, Signal
-from src.services.market_state import MarketStateService
-from src.services.risk_engine import RiskEngine
-from src.settings import Settings
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.logging import get_logger
 from src.utils.maths import complement_fair_value
-from src.utils.time import utc_now, seconds_since
+from src.utils.time import seconds_since, utc_now
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from src.services.market_state import MarketStateService
+    from src.services.risk_engine import RiskEngine
+    from src.settings import Settings
+    from src.storage.sqlite_store import SQLiteStore
 
 logger = get_logger("services.paper_execution")
 
@@ -330,7 +334,8 @@ class PaperExecutionService:
         await self._store.insert_order(exit_order)
 
         # Create fill
-        fee = exit_price * pos.size * 0.02 if self._state.get_market(pos.condition_id) and self._state.get_market(pos.condition_id).fees_enabled else 0.0
+        mkt = self._state.get_market(pos.condition_id)
+        fee = exit_price * pos.size * 0.02 if mkt and mkt.fees_enabled else 0.0
         fill = Fill(
             id=str(uuid4()),
             order_id=exit_order.id,

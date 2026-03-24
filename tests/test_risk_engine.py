@@ -1,16 +1,16 @@
 """Tests for the hardened risk engine."""
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 from src.domain.enums import OrderStatus, Side
 from src.domain.models import Order, Signal
+from src.services.risk_engine import RiskEngine
 from src.settings import RiskConfig
 from src.storage.sqlite_store import SQLiteStore
-from src.services.risk_engine import RiskEngine
 
 
 @pytest.fixture
@@ -44,7 +44,7 @@ def make_signal(edge=0.05, confidence=0.5, token_id="tok1", market_id="mkt1"):
         market_condition_id=market_id, token_id=token_id,
         side=Side.BUY, fair_value=0.55, market_price=0.50,
         edge=edge, confidence=confidence,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
 
 
@@ -113,7 +113,7 @@ async def test_negative_edge_rejected(store, risk_config):
 @pytest.mark.asyncio
 async def test_stale_feed_veto(store, risk_config):
     engine = RiskEngine(risk_config, store)
-    engine._last_book_update["tok1"] = datetime.now(timezone.utc) - timedelta(seconds=60)
+    engine._last_book_update["tok1"] = datetime.now(UTC) - timedelta(seconds=60)
     result = await engine.check(make_order(token_id="tok1"), make_signal(token_id="tok1"))
     assert not result.approved
     assert "Stale feed" in result.reason

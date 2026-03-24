@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from src.domain.enums import Side
 from src.domain.events import EventBus, FillOccurred
 from src.domain.models import Position
-from src.storage.sqlite_store import SQLiteStore
 from src.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from src.storage.sqlite_store import SQLiteStore
 
 logger = get_logger("services.portfolio")
 

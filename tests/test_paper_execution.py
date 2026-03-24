@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from src.domain.enums import Side
-from src.domain.models import Market, OrderBookSnapshot, PriceLevel, Signal, Token
-from src.services.paper_execution import PaperExecutionService
+from src.domain.models import OrderBookSnapshot, PriceLevel, Signal
 from src.utils.time import utc_now
 
 
@@ -32,7 +29,7 @@ def _make_signal(
 def _make_book(best_bid: float, best_ask: float) -> OrderBookSnapshot:
     return OrderBookSnapshot(
         token_id="yes_token",
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         bids=[PriceLevel(price=best_bid, size=200)],
         asks=[PriceLevel(price=best_ask, size=200)],
     )
@@ -43,13 +40,10 @@ class TestPaperExecution:
 
     def test_buy_fill_at_ask(self) -> None:
         """BUY order at market price >= best ask should fill at ask."""
-        from src.services.paper_execution import PaperExecutionService
-        from src.domain.models import Order
-        from src.domain.enums import OrderStatus
 
         # We test _try_fill directly
         # This requires a mock market_state, but we can test the fill model logic
-        signal = _make_signal(side=Side.BUY, market_price=0.52)
+        _make_signal(side=Side.BUY, market_price=0.52)
         book = _make_book(best_bid=0.50, best_ask=0.52)
 
         # Verify book properties

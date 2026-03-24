@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import contextlib
+from datetime import UTC, datetime
 
 import httpx
 
@@ -49,7 +50,7 @@ class PolymarketPublicClient:
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list) and data:
-            return data[0]
+            return dict(data[0])
         return None
 
     async def get_events(self, limit: int = 100, offset: int = 0) -> list[dict]:
@@ -81,7 +82,7 @@ class PolymarketPublicClient:
 
         return OrderBookSnapshot(
             token_id=token_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             bids=sorted(bids, key=lambda x: x.price, reverse=True),
             asks=sorted(asks, key=lambda x: x.price),
         )
@@ -153,10 +154,8 @@ def parse_market(raw: dict) -> Market | None:
 
         end_date = None
         if raw.get("endDate"):
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 end_date = datetime.fromisoformat(raw["endDate"].replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
-                pass
 
         return Market(
             condition_id=condition_id,

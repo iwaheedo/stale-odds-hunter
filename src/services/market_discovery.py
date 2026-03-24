@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from src.adapters.polymarket_public import PolymarketPublicClient, parse_market
 from src.domain.events import EventBus, MarketDiscovered
-from src.domain.models import Market
-from src.settings import Settings
 from src.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from src.domain.models import Market
+    from src.settings import Settings
 
 logger = get_logger("services.market_discovery")
 
@@ -124,10 +127,7 @@ class MarketDiscoveryService:
             return False
 
         # Sports filter (basic heuristic)
-        if cfg.exclude_sports and _is_sports(market):
-            return False
-
-        return True
+        return not (cfg.exclude_sports and _is_sports(market))
 
 
 def _is_sports(market: Market) -> bool:
