@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
-import logging
 import os
 import sqlite3
 import sys
-import threading
 from pathlib import Path
 
 import pandas as pd
@@ -362,163 +358,22 @@ CUSTOM_CSS = """
 
 
 # --- In-Process Bot Management ---
-# The bot runs as a background thread inside the Streamlit process.
-# This works on Streamlit Cloud — no subprocess or local-only process needed.
-
-# Module-level state shared across Streamlit reruns via threading
-_bot_thread: threading.Thread | None = None
-_bot_stop_event: asyncio.Event | None = None
-_bot_loop: asyncio.AbstractEventLoop | None = None
-_bot_log_lines: list[str] = []
-_MAX_LOG_LINES = 200
-_BOT_SENTINEL = Path("/tmp/soh_bot_running")
-
-
-class _BotLogHandler(logging.Handler):
-    """Captures log lines into a shared list for the dashboard."""
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            line = self.format(record)
-            _bot_log_lines.append(line)
-            if len(_bot_log_lines) > _MAX_LOG_LINES:
-                _bot_log_lines.pop(0)
-        except Exception:
-            pass
-
-
-def _bot_thread_target(stop_event: asyncio.Event) -> None:
-    """Entry point for the bot background thread."""
-    global _bot_loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    _bot_loop = loop
-
-    # Add log handler to capture output
-    handler = _BotLogHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s"))
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-    root_logger.setLevel(logging.INFO)
-
-    try:
-        _bot_log_lines.append("Bot thread starting...")
-
-        # Ensure writable paths exist for database
-        db_dir = Path(DB_PATH).parent
-        db_dir.mkdir(parents=True, exist_ok=True)
-        _bot_log_lines.append(f"DB path: {DB_PATH} (writable: {os.access(str(db_dir), os.W_OK)})")
-
-        # Set env so the bot uses the same DB the dashboard reads
-        os.environ["SOH_APP__SQLITE_DB_PATH"] = DB_PATH
-
-        # Ensure config dir is accessible
-        config_dir = PROJECT_ROOT / "config"
-        _bot_log_lines.append(f"Config dir: {config_dir} (exists: {config_dir.exists()})")
-        if not config_dir.exists():
-            # Streamlit Cloud mounts at /mount/src/<repo-name>
-            for alt in [Path("/mount/src/stale-odds-hunter/config"), Path("/app/config")]:
-                if alt.exists():
-                    config_dir = alt
-                    _bot_log_lines.append(f"Using alt config: {alt}")
-                    break
-
-        sys.path.insert(0, str(PROJECT_ROOT))
-        try:
-            os.chdir(str(PROJECT_ROOT))
-        except OSError as exc:
-            _bot_log_lines.append(f"chdir failed: {exc} — using cwd: {os.getcwd()}")
-
-        # Reimport to pick up fresh module
-        import importlib
-
-        import src.main as main_mod
-        importlib.reload(main_mod)
-
-        _bot_log_lines.append("Starting headless bot...")
-        loop.run_until_complete(main_mod.run_bot_headless(stop_event=stop_event))
-        _bot_log_lines.append("Bot run_bot_headless returned (unexpected)")
-    except asyncio.CancelledError:
-        _bot_log_lines.append("Bot stopped (cancelled)")
-    except Exception as e:
-        _bot_log_lines.append(f"BOT CRASHED: {type(e).__name__}: {e}")
-        import traceback
-        tb = traceback.format_exc()
-        for line in tb.split("\n"):
-            if line.strip():
-                _bot_log_lines.append(line)
-    finally:
-        _bot_loop = None
-        _BOT_SENTINEL.unlink(missing_ok=True)
-        with contextlib.suppress(Exception):
-            loop.close()
+# Bot state lives in an imported module (bot_runner) so it persists
+# across Streamlit script reruns. The main script file gets re-executed
+# on every rerun, but imported module globals are cached by Python.
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from src.dashboard import bot_runner
 
 
 def is_bot_running() -> bool:
-    """Check if bot is running via thread ref or sentinel file."""
-    global _bot_thread
-    if _bot_thread is not None and _bot_thread.is_alive():
-        return True
-    # Fallback: check sentinel file (persists across Streamlit worker restarts)
-    if _BOT_SENTINEL.exists():
-        try:
-            pid = int(_BOT_SENTINEL.read_text().strip())
-            import os as _os
-            _os.kill(pid, 0)
-            return True
-        except (ValueError, ProcessLookupError, PermissionError):
-            _BOT_SENTINEL.unlink(missing_ok=True)
-    return False
-
+    return bot_runner.is_running()
 
 def start_bot() -> str:
-    global _bot_thread, _bot_stop_event
-    if is_bot_running():
-        return "Bot is already running"
-
-    _bot_stop_event = asyncio.Event()
-    _bot_log_lines.clear()
-    _bot_thread = threading.Thread(target=_bot_thread_target, args=(_bot_stop_event,), daemon=True)
-    _bot_thread.start()
-    # Write sentinel so other Streamlit workers can detect it
-    _BOT_SENTINEL.write_text(str(os.getpid()))
-    return "Bot started"
-
+    return bot_runner.start(db_path=DB_PATH, project_root=str(PROJECT_ROOT))
 
 def stop_bot() -> str:
-    global _bot_thread, _bot_stop_event
-    if not is_bot_running():
-        return "Bot is not running"
-    if _bot_stop_event:
-        _bot_stop_event.set()
-    if _bot_thread:
-        _bot_thread.join(timeout=5.0)
-    _bot_thread = None
-    _bot_stop_event = None
-    _BOT_SENTINEL.unlink(missing_ok=True)
-    return "Bot stopped"
-
-
-def get_bot_status() -> dict:
-    running = is_bot_running()
-    return {"running": running, "health": None, "risk": None}
-
-
-def halt_trading_api() -> str:
-    # Since the bot runs in-process, we can't easily call its API.
-    # Instead, set a flag that the risk engine checks.
-    _bot_log_lines.append("HALT requested via dashboard")
-    return "Halt requested — bot will stop placing new orders"
-
-
-def resume_trading_api() -> str:
-    _bot_log_lines.append("RESUME requested via dashboard")
-    return "Resume requested"
-
-
-def get_bot_log_tail(lines: int = 40) -> str:
-    if not _bot_log_lines:
-        return "No log output yet — start the bot first."
-    return "\n".join(_bot_log_lines[-lines:])
+    return bot_runner.stop()
 
 
 # --- Database Connection ---
@@ -730,9 +585,8 @@ def main() -> None:
     st_autorefresh(interval=5000, key="autorefresh")
 
     # --- Bot Status ---
-    bot_status = get_bot_status()
-    bot_running = bot_status["running"]
-    is_halted = (bot_status.get("risk") or {}).get("halted", False)
+    bot_running = is_bot_running()
+    is_halted = False
 
     # --- Sidebar: Controls ---
     with st.sidebar:
@@ -782,12 +636,12 @@ def main() -> None:
         col_halt, col_resume = st.columns(2)
         with col_halt:
             if st.button("Halt Trading", disabled=not bot_running or is_halted, use_container_width=True):
-                msg = halt_trading_api()
+                msg = stop_bot()
                 st.warning(msg)
                 st.rerun()
         with col_resume:
             if st.button("Resume", disabled=not bot_running or not is_halted, use_container_width=True):
-                msg = resume_trading_api()
+                msg = start_bot()
                 st.success(msg)
                 st.rerun()
 
@@ -814,10 +668,26 @@ def main() -> None:
 
         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
-        # Log viewer
-        with st.expander("Bot Logs", expanded=False):
-            log_text = get_bot_log_tail(40)
-            st.code(log_text, language="json")
+        # Log viewer — expanded by default if bot not running (to show crash info)
+        with st.expander("Bot Logs", expanded=not bot_running):
+            log_text = bot_runner.get_logs(50)
+            st.code(log_text, language=None)
+
+        # Debug info (always visible — helps diagnose Cloud issues)
+        with st.expander("Debug Info", expanded=False):
+            st.code(
+                f"PROJECT_ROOT: {PROJECT_ROOT}\n"
+                f"DB_PATH: {DB_PATH}\n"
+                f"CWD: {os.getcwd()}\n"
+                f"config/ exists: {(PROJECT_ROOT / 'config').exists()}\n"
+                f"app.yaml exists: {(PROJECT_ROOT / 'config' / 'app.yaml').exists()}\n"
+                f"bot_runner module: {bot_runner.__file__}\n"
+                f"bot_thread alive: {bot_runner.bot_thread is not None and bot_runner.bot_thread.is_alive()}\n"
+                f"sentinel exists: {bot_runner.SENTINEL.exists()}\n"
+                f"Python: {sys.executable}\n"
+                f"sys.path[0]: {sys.path[0] if sys.path else 'empty'}",
+                language=None,
+            )
 
     # --- Top Bar ---
     status_dot = f'<span class="status-dot {"green" if bot_running and not is_halted else "red" if is_halted else "yellow"}"></span>'
