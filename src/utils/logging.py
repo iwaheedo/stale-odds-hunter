@@ -35,8 +35,8 @@ def setup_logging(level: str = "INFO", fmt: str = "json") -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # Clear existing handlers
-    root.handlers.clear()
+    # Clear only StreamHandler instances (preserve external handlers like BotLogHandler)
+    root.handlers = [h for h in root.handlers if not isinstance(h, logging.StreamHandler)]
 
     handler = logging.StreamHandler(sys.stdout)
     if fmt == "json":
