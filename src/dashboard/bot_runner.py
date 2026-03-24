@@ -63,7 +63,11 @@ def _thread_target(stop_event: asyncio.Event, db_path: str, project_root: str) -
         db_dir = Path("/tmp/soh/sqlite")
         db_dir.mkdir(parents=True, exist_ok=True)
         db_path = str(db_dir / "stale_odds_hunter.db")
-        log_lines.append(f"Using DB: {db_path}")
+
+        # Clear old data on fresh start
+        for f in db_dir.glob("stale_odds_hunter.db*"):
+            f.unlink(missing_ok=True)
+        log_lines.append(f"Using DB: {db_path} (fresh)")
 
         # Set env for settings loader
         os.environ["SOH_APP__SQLITE_DB_PATH"] = db_path
