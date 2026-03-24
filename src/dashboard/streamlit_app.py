@@ -372,12 +372,10 @@ def stop_bot() -> str:
 
 
 # --- Database Connection ---
-@st.cache_resource
 def get_db() -> sqlite3.Connection:
-    """Connect to SQLite with WAL-safe read-only access."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    """Fresh connection each time — picks up new tables created by the bot."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA query_only=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -386,7 +384,9 @@ def safe_query(query: str, params: tuple = ()) -> pd.DataFrame:
     """Execute a query and return a DataFrame, gracefully handling missing tables."""
     try:
         conn = get_db()
-        return pd.read_sql_query(query, conn, params=params)
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return df
     except Exception:
         return pd.DataFrame()
 
