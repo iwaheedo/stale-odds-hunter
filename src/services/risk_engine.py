@@ -65,7 +65,9 @@ class RiskEngine:
     def resume(self) -> None:
         self._halted = False
         self._halt_reason = ""
-        logger.info("Risk engine resumed")
+        self._recent_rejects = 0
+        self._recent_orders = 0
+        logger.info("Risk engine resumed — reject counters reset")
 
     def record_book_update(self, token_id: str) -> None:
         self._last_book_update[token_id] = utc_now()
@@ -74,18 +76,23 @@ class RiskEngine:
         if self._halted:
             return RiskDecision(approved=False, reason=f"Trading halted: {self._halt_reason}")
 
+        # Rate limit is checked first — rejections from it are "soft"
+        # and don't count toward the reject rate (they're expected throttling)
+        rate_result = await self._check_rate_limit()
+        if not rate_result.approved:
+            return RiskDecision(approved=False, reason=rate_result.reason)
+
+        # "Hard" risk checks — rejections here count toward reject rate
         checks = [
             self._check_position_limit(order),
             self._check_portfolio_limit(order),
             self._check_category_concentration(order),
             self._check_correlated_exposure(order),
             self._check_daily_drawdown(),
-            self._check_rate_limit(),
             self._check_max_positions(),
             self._check_spread_ceiling(signal),
             self._check_stale_feed(order),
             self._check_market_close_proximity(order),
-            self._check_reject_rate(),
             self._check_rapid_adverse_move(order),
         ]
 
@@ -109,6 +116,11 @@ class RiskEngine:
                 },
             )
             return RiskDecision(approved=False, reason=combined)
+
+        # Check reject rate AFTER counting — only hard rejects matter
+        reject_result = await self._check_reject_rate()
+        if not reject_result.approved:
+            return RiskDecision(approved=False, reason=reject_result.reason)
 
         self._orders_this_minute.append(utc_now())
         return RiskDecision(approved=True)
