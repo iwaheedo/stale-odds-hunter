@@ -70,6 +70,11 @@ class StaleOddsStrategy(BaseStrategy):
         if not yes_book.bids or not yes_book.asks or not no_book.bids or not no_book.asks:
             return []
 
+        # Don't signal if we already have a position in this market
+        for pos in positions:
+            if pos.condition_id == market.condition_id and pos.size > 0:
+                return []
+
         signals: list[Signal] = []
 
         # Check 1: Complement deviation (YES + NO != 1.0)
@@ -99,21 +104,9 @@ class StaleOddsStrategy(BaseStrategy):
             if signal and not any(s.token_id == signal.token_id for s in signals):
                 signals.append(signal)
 
-        # Check 3: Book imbalance (bid depth >> ask depth or vice versa)
-        for token in market.tokens:
-            book = books.get(token.token_id)
-            if not book or not book.bids or not book.asks:
-                continue
-            other_token = no_token if token.token_id == yes_token.token_id else yes_token
-            other_book = books.get(other_token.token_id)
-            if not other_book:
-                continue
-
-            signal = self._evaluate_book_imbalance(
-                market, token.token_id, book, other_book, market.fees_enabled,
-            )
-            if signal and not any(s.token_id == signal.token_id for s in signals):
-                signals.append(signal)
+        # Check 3: Book imbalance — DISABLED
+        # Polymarket books are naturally skewed (millions on one side),
+        # causing false signals on nearly every market.
 
         if signals:
             self._last_signal_time[market.condition_id] = utc_now()

@@ -157,13 +157,24 @@ class PaperExecutionService:
         )
 
     def _calculate_size(self, signal: Signal) -> float:
-        """Position size based on config and confidence."""
-        base_size = self._settings.strategies.default_order_size_usd
-        max_size = self._settings.strategies.max_order_size_usd
+        """Position size in USD, converting from dollar amount to share count.
 
-        # Scale by confidence
-        scaled = base_size * signal.confidence
-        return min(max(scaled, 1.0), max_size)
+        On Polymarket, order size is in shares. Price is 0-1 (probability).
+        To buy $10 worth of shares at price 0.50, you need 20 shares.
+        size_shares = usd_amount / price
+        """
+        base_usd = self._settings.strategies.default_order_size_usd
+        max_usd = self._settings.strategies.max_order_size_usd
+
+        # Scale USD amount by confidence
+        usd_amount = base_usd * signal.confidence
+        usd_amount = min(max(usd_amount, 1.0), max_usd)
+
+        # Convert USD to share count
+        price = signal.market_price
+        if price <= 0.01 or price >= 0.99:
+            return 0.0  # Don't trade at extreme prices
+        return round(usd_amount / price, 2)
 
     def _try_fill(self, order: Order, signal: Signal) -> Fill | None:
         """Simulate fill based on current book state.

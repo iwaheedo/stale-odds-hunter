@@ -4,9 +4,9 @@ enabled_strategies:
   - stale_odds
 
 # Global thresholds
-entry_edge_threshold: 0.015
-exit_edge_threshold: 0.008
-slippage_buffer: 0.002
+entry_edge_threshold: 0.02
+exit_edge_threshold: 0.01
+slippage_buffer: 0.003
 uncertainty_buffer: 0.005
 hold_time_limit_minutes: 120
 
