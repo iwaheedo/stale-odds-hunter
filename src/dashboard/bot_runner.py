@@ -137,6 +137,12 @@ def start(db_path: str, project_root: str) -> str:
     if is_running():
         return "Bot is already running"
 
+    # Clear old database before starting fresh
+    db_dir = Path("/tmp/soh/sqlite")
+    if db_dir.exists():
+        for f in db_dir.glob("*"):
+            f.unlink(missing_ok=True)
+
     bot_stop_event = asyncio.Event()
     log_lines.clear()
     bot_thread = threading.Thread(
