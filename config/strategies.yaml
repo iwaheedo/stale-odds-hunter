@@ -4,18 +4,18 @@ enabled_strategies:
   - stale_odds
 
 # Global thresholds
-entry_edge_threshold: 0.02
-exit_edge_threshold: 0.01
-slippage_buffer: 0.003
-uncertainty_buffer: 0.005
-hold_time_limit_minutes: 120
+entry_edge_threshold: 0.015
+exit_edge_threshold: 0.005
+slippage_buffer: 0.002
+uncertainty_buffer: 0.003
+hold_time_limit_minutes: 30
 
 # Stale odds specific
 stale_odds:
-  complement_deviation_threshold: 0.01
+  complement_deviation_threshold: 0.008
   staleness_seconds: 60
-  min_confidence: 0.15
-  max_spread_for_entry: 0.25
+  min_confidence: 0.25
+  max_spread_for_entry: 0.20
 
 # Cross-market consistency (disabled by default)
 cross_market:
@@ -23,5 +23,5 @@ cross_market:
   sum_deviation_threshold: 0.05
 
 # Position sizing
-default_order_size_usd: 10.0
-max_order_size_usd: 50.0
+default_order_size_usd: 25.0
+max_order_size_usd: 100.0

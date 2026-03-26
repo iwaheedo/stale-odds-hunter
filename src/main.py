@@ -72,7 +72,7 @@ async def run_bot_headless(
     ws_client = PolymarketWebSocket(event_bus, settings)
     discovery = MarketDiscoveryService(poly_client, settings, event_bus)
     risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
-    portfolio = PortfolioEngine(store, event_bus)
+    portfolio = PortfolioEngine(store, event_bus, market_state=market_state)
 
     strategies: list[BaseStrategy] = []
     if "stale_odds" in settings.strategies.enabled_strategies:
@@ -182,7 +182,7 @@ async def run_bot() -> None:
     ws_client = PolymarketWebSocket(event_bus, settings)
     discovery = MarketDiscoveryService(poly_client, settings, event_bus)
     risk_engine = RiskEngine(settings.risk, store, event_bus=event_bus, market_state=market_state)
-    portfolio = PortfolioEngine(store, event_bus)
+    portfolio = PortfolioEngine(store, event_bus, market_state=market_state)
 
     # Build strategies
     strategies: list[BaseStrategy] = []

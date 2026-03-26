@@ -65,7 +65,7 @@ class StaleOddsStrategy(BaseStrategy):
 
         # Momentum params
         self._momentum_window_sec = 60.0  # look back 60s for price moves
-        self._momentum_threshold = 0.005  # 0.5 cent move triggers momentum check
+        self._momentum_threshold = 0.01  # 1 cent minimum move (was 0.5 cent — too noisy)
         self._momentum_continuation_factor = 0.4  # expect 40% continuation
 
         # Price history per token
@@ -371,7 +371,7 @@ class StaleOddsStrategy(BaseStrategy):
         ratio = bid_depth / ask_depth
 
         # Need extreme imbalance (10:1) to be meaningful
-        if 0.1 < ratio < 10.0:
+        if 0.02 < ratio < 50.0:
             return None
 
         if book.spread > self._max_spread:
@@ -381,7 +381,7 @@ class StaleOddsStrategy(BaseStrategy):
         log_ratio = math.log2(max(ratio, 1.0 / ratio))
         shift = min(log_ratio * 0.005, 0.03)  # Max 3 cent shift
 
-        if ratio >= 10.0:
+        if ratio >= 50.0:
             # Heavy bids → fair value above midpoint → BUY
             fair_value = midpoint + shift
             edge = fair_value - book.best_ask - fees - self._slippage_buffer
@@ -398,7 +398,7 @@ class StaleOddsStrategy(BaseStrategy):
                     rationale=f"depth_imbalance: bid={bid_depth:.0f}, ask={ask_depth:.0f}, "
                               f"ratio={ratio:.1f}x, shift={shift:.4f}",
                 )
-        elif ratio <= 0.1:
+        elif ratio <= 0.02:
             # Heavy asks → fair value below midpoint → SELL
             fair_value = midpoint - shift
             edge = book.best_bid - fair_value - fees - self._slippage_buffer

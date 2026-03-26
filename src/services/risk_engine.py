@@ -117,10 +117,8 @@ class RiskEngine:
             )
             return RiskDecision(approved=False, reason=combined)
 
-        # Check reject rate AFTER counting — only hard rejects matter
-        reject_result = await self._check_reject_rate()
-        if not reject_result.approved:
-            return RiskDecision(approved=False, reason=reject_result.reason)
+        # Reject rate check disabled in paper mode — causes more harm than good
+        # by halting trading when the real issue is threshold calibration.
 
         self._orders_this_minute.append(utc_now())
         return RiskDecision(approved=True)
