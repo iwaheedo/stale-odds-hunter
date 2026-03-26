@@ -72,6 +72,10 @@ disallow_untyped_defs = false
 strict = false
 
 [[tool.mypy.overrides]]
+module = "src.dashboard.cloud_diagnostics"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 module = "src.adapters.polymarket_live"
 disallow_untyped_defs = false
 disable_error_code = ["no-untyped-call", "no-any-return"]

@@ -697,12 +697,13 @@ def main() -> None:
     """, unsafe_allow_html=True)
 
     # --- Tabs ---
-    tab_command, tab_orders, tab_portfolio, tab_health, tab_backtest = st.tabs([
+    tab_command, tab_orders, tab_portfolio, tab_health, tab_backtest, tab_diag = st.tabs([
         "Command Center",
         "Orders & Fills",
         "Portfolio",
         "System Health",
         "Backtest",
+        "Diagnostics",
     ])
 
     # ==============================
@@ -1071,6 +1072,83 @@ def main() -> None:
         )
         if not outcome_df.empty:
             st.bar_chart(outcome_df.set_index("status"), height=250)
+
+    # ==============================
+    # TAB 6: Diagnostics
+    # ==============================
+    with tab_diag:
+        from src.dashboard import cloud_diagnostics
+
+        st.markdown(section_header("Cloud Diagnostics"), unsafe_allow_html=True)
+        st.markdown("""
+        <div style="color: #86868B; font-size: 13px; margin-bottom: 16px;">
+            Test each subsystem independently to identify what works and what fails
+            on this environment. Results can be copied and shared for debugging.
+        </div>
+        """, unsafe_allow_html=True)
+
+        if "diag_results" not in st.session_state:
+            st.session_state["diag_results"] = []
+
+        # Run All button
+        if st.button("Run All Diagnostics", type="primary", key="run_all_diag"):
+            with st.spinner("Running all diagnostics (may take up to 60s)..."):
+                st.session_state["diag_results"] = cloud_diagnostics.run_all()
+
+        st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
+
+        # Individual test buttons
+        st.markdown("""
+        <div style="font-size:13px; font-weight:600; color:#86868B; text-transform:uppercase;
+                    letter-spacing:0.5px; margin-bottom:8px;">Individual Tests</div>
+        """, unsafe_allow_html=True)
+
+        bc1, bc2, bc3, bc4 = st.columns(4)
+        with bc1:
+            if st.button("Environment", use_container_width=True, key="diag_env"):
+                st.session_state["diag_results"] = [cloud_diagnostics.test_environment()]
+        with bc2:
+            if st.button("Filesystem", use_container_width=True, key="diag_fs"):
+                st.session_state["diag_results"] = [cloud_diagnostics.test_filesystem()]
+        with bc3:
+            if st.button("SQLite", use_container_width=True, key="diag_sql"):
+                st.session_state["diag_results"] = [cloud_diagnostics.test_sqlite()]
+        with bc4:
+            if st.button("Event Bus", use_container_width=True, key="diag_bus"):
+                st.session_state["diag_results"] = [cloud_diagnostics.test_event_bus()]
+
+        bc5, bc6, bc7, _bc8 = st.columns(4)
+        with bc5:
+            if st.button("HTTP", use_container_width=True, key="diag_http"):
+                with st.spinner("Testing HTTP..."):
+                    st.session_state["diag_results"] = [cloud_diagnostics.test_http()]
+        with bc6:
+            if st.button("WebSocket", use_container_width=True, key="diag_ws"):
+                with st.spinner("Testing WebSocket (up to 25s)..."):
+                    http_r = cloud_diagnostics.test_http()
+                    tid = getattr(http_r, "_token_id", None)
+                    ws_r = cloud_diagnostics.test_websocket(tid)
+                    st.session_state["diag_results"] = [http_r, ws_r]
+        with bc7:
+            if st.button("Signal Pipeline", use_container_width=True, key="diag_sig"):
+                with st.spinner("Testing signal pipeline..."):
+                    st.session_state["diag_results"] = [cloud_diagnostics.test_signal_pipeline()]
+
+        st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+
+        # Display results
+        results = st.session_state.get("diag_results", [])
+        if results:
+            for r in results:
+                color = {"PASS": "#34C759", "FAIL": "#FF3B30", "WARN": "#FF9F0A"}.get(r.status, "#86868B")
+                with st.expander(f"{'PASS' if r.status == 'PASS' else r.status} — {r.name} ({r.duration_ms:.0f}ms)", expanded=r.status != "PASS"):
+                    for d in r.details:
+                        st.text(d)
+
+            st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+            st.markdown(section_header("Full Report (copy this)"), unsafe_allow_html=True)
+            report = cloud_diagnostics.format_report(results)
+            st.code(report, language=None)
 
 
 if __name__ == "__main__":

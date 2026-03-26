@@ -43,10 +43,11 @@ def _thread_target(stop_event: asyncio.Event, db_path: str, project_root: str) -
     asyncio.set_event_loop(loop)
     bot_loop = loop
 
-    # Capture logs
+    # Capture logs — remove any stale BotLogHandler from previous runs first
+    root = logging.getLogger()
+    root.handlers = [h for h in root.handlers if not isinstance(h, BotLogHandler)]
     handler = BotLogHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s"))
-    root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 

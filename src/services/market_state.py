@@ -116,20 +116,23 @@ class MarketStateService:
 
     async def _poll_stale_books(self) -> None:
         """HTTP polling fallback: fetch books for tokens not updated by WebSocket recently."""
-        logger.info("Book polling fallback started (interval=%ds, stale threshold=%ds)",
+        logger.info("HTTP poll fallback started (interval=%ds, stale=%ds)",
                      int(POLL_STALE_INTERVAL_SEC), int(BOOK_STALE_THRESHOLD_SEC))
+        first_poll_done = False
+        poll_errors = 0
         while True:
             await asyncio.sleep(POLL_STALE_INTERVAL_SEC)
             if not self._http:
+                logger.info("HTTP poll: no HTTP client available")
                 continue
 
             polled = 0
+            errors = 0
             for market in list(self._markets.values()):
                 for token in market.tokens:
                     last = self._last_book_update.get(token.token_id)
                     if last and seconds_since(last) < BOOK_STALE_THRESHOLD_SEC:
                         continue
-                    # This token is stale — poll via HTTP
                     try:
                         snap = await self._http.get_order_book(token.token_id)
                         if snap.bids or snap.asks:
@@ -138,9 +141,16 @@ class MarketStateService:
                             await self._bus.emit(OrderBookUpdated(snapshot=snap))
                             await self._maybe_persist_snapshot(snap)
                             polled += 1
+                            if not first_poll_done:
+                                logger.info("HTTP poll: first book received (%s, %d bids, %d asks)",
+                                            token.token_id[:16], len(snap.bids), len(snap.asks))
+                                first_poll_done = True
                     except Exception as exc:
-                        logger.debug("HTTP poll failed for %s: %s", token.token_id[:12], exc)
+                        errors += 1
+                        if errors <= 3:  # Log first few errors per cycle
+                            logger.warning("HTTP poll error for %s: %s", token.token_id[:16], exc)
 
             tracked = len(self._markets)
-            logger.info("HTTP poll: fetched %d books (%d markets tracked, %d tokens known)",
-                        polled, tracked, len(self._last_book_update))
+            poll_errors += errors
+            logger.info("HTTP poll: %d fetched, %d errors (%d markets, %d tokens total, %d cumulative errors)",
+                        polled, errors, tracked, len(self._last_book_update), poll_errors)
