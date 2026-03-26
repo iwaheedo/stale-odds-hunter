@@ -138,8 +138,9 @@ class MarketStateService:
                             await self._bus.emit(OrderBookUpdated(snapshot=snap))
                             await self._maybe_persist_snapshot(snap)
                             polled += 1
-                    except Exception:
-                        pass  # Silent — don't spam logs for HTTP failures
+                    except Exception as exc:
+                        logger.debug("HTTP poll failed for %s: %s", token.token_id[:12], exc)
 
-            if polled > 0:
-                logger.debug("Polled %d stale books via HTTP", polled)
+            tracked = len(self._markets)
+            logger.info("HTTP poll: fetched %d books (%d markets tracked, %d tokens known)",
+                        polled, tracked, len(self._last_book_update))

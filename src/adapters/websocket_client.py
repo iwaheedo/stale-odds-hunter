@@ -110,8 +110,14 @@ class PolymarketWebSocket:
 
     async def _resubscribe_all(self) -> None:
         if self._subscribed_assets:
-            await self._send_subscribe(list(self._subscribed_assets))
-            logger.info("Re-subscribed to %d tokens after reconnect", len(self._subscribed_assets))
+            # Batch subscriptions — some WS servers reject huge payloads
+            all_ids = list(self._subscribed_assets)
+            batch_size = 20
+            for i in range(0, len(all_ids), batch_size):
+                batch = all_ids[i:i + batch_size]
+                await self._send_subscribe(batch)
+            logger.info("Re-subscribed to %d tokens (%d batches) after reconnect",
+                        len(self._subscribed_assets), (len(all_ids) + batch_size - 1) // batch_size)
 
     async def _ping_loop(self, ws: Any) -> None:
         interval = self._settings.app.ws_ping_interval_sec
@@ -123,6 +129,10 @@ class PolymarketWebSocket:
                 return
 
     async def _read_loop(self, ws: Any) -> None:
+        msg_count = 0
+        event_count = 0
+        last_log = utc_now().timestamp()
+
         async for raw in ws:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8", errors="replace")
@@ -130,6 +140,7 @@ class PolymarketWebSocket:
                 continue
 
             self._last_message_at = utc_now()
+            msg_count += 1
 
             try:
                 msgs = json.loads(raw)
@@ -142,7 +153,16 @@ class PolymarketWebSocket:
                 msgs = [msgs]
 
             for msg in msgs:
+                event_count += 1
                 await self._handle_message(msg)
+
+            # Periodic throughput log
+            now = utc_now().timestamp()
+            if now - last_log >= 30.0:
+                logger.info("WS throughput: %d messages, %d events in 30s", msg_count, event_count)
+                msg_count = 0
+                event_count = 0
+                last_log = now
 
     async def _handle_message(self, msg: dict) -> None:
         event_type = msg.get("event_type", "")
