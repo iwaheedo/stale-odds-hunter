@@ -1,24 +1,24 @@
 # Risk management configuration
 
 # Position limits
-max_risk_per_trade_pct: 5.0
-max_market_exposure_pct: 15.0
-max_category_exposure_pct: 25.0
-max_correlated_exposure_pct: 20.0
+max_risk_per_trade_pct: 3.0
+max_market_exposure_pct: 10.0
+max_category_exposure_pct: 20.0
+max_correlated_exposure_pct: 15.0
 
 # Drawdown
 max_daily_drawdown_pct: 10.0
 
-# Portfolio
-max_open_positions: 30
+# Portfolio — fewer positions, higher quality
+max_open_positions: 10
 starting_equity_usd: 10000.0
 
 # Rate limiting
-max_orders_per_minute: 30
+max_orders_per_minute: 20
 
 # Kill switches
 stale_feed_timeout_sec: 120
-max_spread_ceiling: 0.30
+max_spread_ceiling: 0.20
 rapid_adverse_move_pct: 10.0
 max_order_reject_rate_pct: 95.0
 

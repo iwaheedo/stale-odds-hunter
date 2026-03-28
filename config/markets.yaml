@@ -10,14 +10,14 @@ slugs_whitelist: []
 slugs_blacklist: []
 
 # Filters
-min_liquidity: 300.0
-max_spread: 0.20
-min_volume_24h: 100.0
+min_liquidity: 1000.0
+max_spread: 0.15
+min_volume_24h: 500.0
 
-# Market type filters
+# Market type filters — sports included; penny tokens filtered in strategy code
 exclude_sports: false
 exclude_fee_enabled: false
 binary_only: true
 
 # Maximum markets to track simultaneously
-max_tracked_markets: 100
+max_tracked_markets: 50

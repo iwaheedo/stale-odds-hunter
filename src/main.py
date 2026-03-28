@@ -97,6 +97,55 @@ async def run_bot_headless(
                 await asyncio.sleep(0.5)
             raise asyncio.CancelledError("Stop requested")
 
+    async def _performance_reporter() -> None:
+        """Log trading performance at 2, 5, and 10 minute marks."""
+        for checkpoint_min in [2, 5, 10]:
+            await asyncio.sleep(checkpoint_min * 60 - (2 * 60 if checkpoint_min > 2 else 0))
+            try:
+                cur = await store.conn.execute("SELECT COUNT(*) FROM signals")
+                signals_count = await cur.fetchone()
+                cur = await store.conn.execute("SELECT COUNT(*) FROM orders")
+                orders_count = await cur.fetchone()
+                cur = await store.conn.execute("SELECT COUNT(*) FROM fills")
+                fills_count = await cur.fetchone()
+                cur = await store.conn.execute(
+                    "SELECT COUNT(*) FROM orders WHERE signal_id = 'EXIT'"
+                )
+                exits_count = await cur.fetchone()
+                cur = await store.conn.execute(
+                    "SELECT COUNT(CASE WHEN size > 0 THEN 1 END), "
+                    "COALESCE(SUM(realized_pnl), 0), "
+                    "COALESCE(SUM(unrealized_pnl), 0), "
+                    "COALESCE(SUM(size * avg_entry), 0) "
+                    "FROM positions"
+                )
+                pos_data = await cur.fetchone()
+                cur = await store.conn.execute(
+                    "SELECT COUNT(*) FROM orders WHERE status = 'REJECTED'"
+                )
+                rejected = await cur.fetchone()
+
+                sig = signals_count[0] if signals_count else 0
+                ord_ = orders_count[0] if orders_count else 0
+                fil = fills_count[0] if fills_count else 0
+                ext = exits_count[0] if exits_count else 0
+                rej = rejected[0] if rejected else 0
+                open_pos = pos_data[0] if pos_data else 0
+                rpnl = float(pos_data[1]) if pos_data else 0.0
+                upnl = float(pos_data[2]) if pos_data else 0.0
+                exp = float(pos_data[3]) if pos_data else 0.0
+
+                logger.info(
+                    "=== PERFORMANCE REPORT (%dmin) === "
+                    "Signals:%d Orders:%d Fills:%d Exits:%d Rejected:%d "
+                    "OpenPos:%d Exposure:$%.2f "
+                    "RealizedPnL:$%+.2f UnrealizedPnL:$%+.2f TotalPnL:$%+.2f",
+                    checkpoint_min, sig, ord_, fil, ext, rej,
+                    open_pos, exp, rpnl, upnl, rpnl + upnl,
+                )
+            except Exception:
+                logger.exception("Performance reporter failed at %dmin", checkpoint_min)
+
     # Define tasks as (name, coroutine_factory) so we can restart them
     task_defs: dict[str, object] = {
         "discovery": discovery.run,
@@ -107,6 +156,7 @@ async def run_bot_headless(
         "portfolio": portfolio.run,
         "risk_monitor": risk_engine.run_monitor,
         "ws_subscriber": on_market_discovered,
+        "perf_reporter": _performance_reporter,
     }
     running_tasks: dict[str, asyncio.Task] = {}
 

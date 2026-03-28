@@ -121,31 +121,18 @@ class StaleOddsStrategy(BaseStrategy):
         self._record_price(no_token.token_id, no_book)
 
         fees = 0.02 if market.fees_enabled else 0.0
-        signals: list[Signal] = []
+        candidates: list[Signal] = []
 
-        # --- Check 1: Momentum signal ---
+        # --- Only trade tokens in the 0.05-0.95 range (skip penny/near-certain tokens) ---
+        tradeable_pairs = []
         for token, book, other_book in [
             (yes_token, yes_book, no_book),
             (no_token, no_book, yes_book),
         ]:
-            signal = self._check_momentum(
-                market, token.token_id, book, other_book, fees,
-            )
-            if signal:
-                signals.append(signal)
+            if 0.05 <= book.midpoint <= 0.95:
+                tradeable_pairs.append((token, book, other_book))
 
-        # --- Check 2: Spread widening signal ---
-        for token, book, other_book in [
-            (yes_token, yes_book, no_book),
-            (no_token, no_book, yes_book),
-        ]:
-            signal = self._check_spread_widening(
-                market, token.token_id, book, other_book, fees,
-            )
-            if signal and not any(s.token_id == signal.token_id for s in signals):
-                signals.append(signal)
-
-        # --- Check 3: Complement deviation (original) ---
+        # --- Check 1: Complement deviation (primary signal — theoretically sound) ---
         complement_sum = yes_book.midpoint + no_book.midpoint
         deviation = abs(complement_sum - 1.0)
         if deviation >= self._complement_threshold:
@@ -153,23 +140,40 @@ class StaleOddsStrategy(BaseStrategy):
                 market, yes_token.token_id, no_token.token_id,
                 yes_book, no_book, fees,
             )
-            if signal and not any(s.token_id == signal.token_id for s in signals):
-                signals.append(signal)
+            if signal:
+                candidates.append(signal)
 
-        # --- Check 4: Depth imbalance ---
-        for token, book, other_book in [
-            (yes_token, yes_book, no_book),
-            (no_token, no_book, yes_book),
-        ]:
+        # --- Check 2: Momentum signal (only on tradeable-priced tokens) ---
+        for token, book, other_book in tradeable_pairs:
+            signal = self._check_momentum(
+                market, token.token_id, book, other_book, fees,
+            )
+            if signal:
+                candidates.append(signal)
+
+        # --- Check 3: Spread widening (only on tradeable-priced tokens) ---
+        for token, book, other_book in tradeable_pairs:
+            signal = self._check_spread_widening(
+                market, token.token_id, book, other_book, fees,
+            )
+            if signal:
+                candidates.append(signal)
+
+        # --- Check 4: Depth imbalance (only on mid-range tokens, 50:1+ ratio) ---
+        for token, book, other_book in tradeable_pairs:
             signal = self._check_depth_imbalance(
                 market, token.token_id, book, other_book, fees,
             )
-            if signal and not any(s.token_id == signal.token_id for s in signals):
-                signals.append(signal)
+            if signal:
+                candidates.append(signal)
 
-        if signals:
+        # --- H1 FIX: Only emit the SINGLE BEST signal per market ---
+        # This prevents buying YES and selling NO simultaneously.
+        if candidates:
+            best = max(candidates, key=lambda s: s.edge * s.confidence)
             self._last_signal_time[market.condition_id] = utc_now()
-        return signals
+            return [best]
+        return []
 
     def _check_momentum(
         self, market: Market, token_id: str,
@@ -371,7 +375,7 @@ class StaleOddsStrategy(BaseStrategy):
         ratio = bid_depth / ask_depth
 
         # Need extreme imbalance (10:1) to be meaningful
-        if 0.02 < ratio < 50.0:
+        if 0.05 < ratio < 20.0:
             return None
 
         if book.spread > self._max_spread:
@@ -381,7 +385,7 @@ class StaleOddsStrategy(BaseStrategy):
         log_ratio = math.log2(max(ratio, 1.0 / ratio))
         shift = min(log_ratio * 0.005, 0.03)  # Max 3 cent shift
 
-        if ratio >= 50.0:
+        if ratio >= 20.0:
             # Heavy bids → fair value above midpoint → BUY
             fair_value = midpoint + shift
             edge = fair_value - book.best_ask - fees - self._slippage_buffer
@@ -398,7 +402,7 @@ class StaleOddsStrategy(BaseStrategy):
                     rationale=f"depth_imbalance: bid={bid_depth:.0f}, ask={ask_depth:.0f}, "
                               f"ratio={ratio:.1f}x, shift={shift:.4f}",
                 )
-        elif ratio <= 0.02:
+        elif ratio <= 0.05:
             # Heavy asks → fair value below midpoint → SELL
             fair_value = midpoint - shift
             edge = book.best_bid - fair_value - fees - self._slippage_buffer

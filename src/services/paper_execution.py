@@ -143,11 +143,12 @@ class PaperExecutionService:
         base_usd = self._settings.strategies.default_order_size_usd
         price = signal.market_price
 
-        if price <= 0.001 or price >= 0.999:
-            size = 0.0  # Don't trade at extreme prices (near-certain outcomes)
+        if price < 0.05 or price > 0.95:
+            size = 0.0  # Don't trade penny/near-certain tokens
         else:
             size = round(base_usd / price, 2)
-            size = max(size, 5.0)  # Minimum 5 shares
+            size = min(size, 100.0)  # Cap at 100 shares to limit penny-token leverage
+            size = max(size, 5.0)
 
         return Order(
             id=str(uuid4()),
@@ -200,9 +201,9 @@ class PaperExecutionService:
     # --- Exit Monitoring ---
 
     async def _exit_monitor_loop(self) -> None:
-        """Check open positions every 5s for exit conditions."""
+        """Check open positions every 3s for exit conditions."""
         while True:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(3.0)
             try:
                 positions = await self._store.get_open_positions()
                 for pos in positions:
@@ -226,25 +227,20 @@ class PaperExecutionService:
             current_pnl = (pos.avg_entry - book.best_ask) * pos.size
 
         if meta:
-            edge_value = abs(meta.entry_edge) * meta.size  # total edge in dollars
-            # Minimum threshold so we don't hold forever on tiny edges
-            min_profit_target = 0.50  # at least 50 cents profit to exit
-            min_stop_loss = -1.00  # at most $1 loss before cutting
+            # Absolute dollar thresholds — simple and predictable
+            profit_target = 1.00  # Take $1 profit
+            stop_loss = -2.00  # Cut at $2 loss
 
-            # Profit target: take profit at 1.5x the expected edge or $0.50
-            profit_threshold = max(edge_value * 1.5, min_profit_target)
-            if current_pnl >= profit_threshold:
-                return f"profit_target: pnl={current_pnl:+.2f} >= {profit_threshold:.2f}"
+            if current_pnl >= profit_target:
+                return f"profit_target: pnl={current_pnl:+.2f} >= ${profit_target:.2f}"
 
-            # Stop-loss: cut losses at 2x edge or $1.00
-            stop_threshold = min(-edge_value * 2.0, min_stop_loss)
-            if current_pnl <= stop_threshold:
-                return f"stop_loss: pnl={current_pnl:+.2f} <= {stop_threshold:.2f}"
+            if current_pnl <= stop_loss:
+                return f"stop_loss: pnl={current_pnl:+.2f} <= ${stop_loss:.2f}"
 
-            # Time stop: 10 minutes for paper mode (keeps turnover high)
+            # Time stop: 5 minutes — forces turnover, prevents stale positions
             held_min = seconds_since(meta.entry_time) / 60.0
-            if held_min > 10:
-                return f"time_stop: {held_min:.0f}min > 10min"
+            if held_min > 5:
+                return f"time_stop: {held_min:.0f}min > 5min"
 
         else:
             return "no_metadata: exiting orphan position"
