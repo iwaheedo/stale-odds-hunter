@@ -46,18 +46,29 @@ class OrderBookSnapshot:
 
     @property
     def best_bid(self) -> float:
+        """Best bid price. Returns 0.0 if no bids (callers must check .bids first)."""
         return self.bids[0].price if self.bids else 0.0
 
     @property
     def best_ask(self) -> float:
+        """Best ask price. Returns 1.0 if no asks (callers must check .asks first)."""
         return self.asks[0].price if self.asks else 1.0
 
     @property
+    def has_both_sides(self) -> bool:
+        """True if both bids and asks are present — safe to use midpoint/spread."""
+        return bool(self.bids and self.asks)
+
+    @property
     def midpoint(self) -> float:
+        if not self.has_both_sides:
+            return 0.5  # Neutral fallback — callers should check has_both_sides
         return (self.best_bid + self.best_ask) / 2.0
 
     @property
     def spread(self) -> float:
+        if not self.has_both_sides:
+            return 1.0  # Max spread — signals will be filtered out
         return self.best_ask - self.best_bid
 
     @property

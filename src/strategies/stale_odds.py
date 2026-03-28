@@ -113,7 +113,7 @@ class StaleOddsStrategy(BaseStrategy):
 
         if not yes_book or not no_book:
             return []
-        if not yes_book.bids or not yes_book.asks or not no_book.bids or not no_book.asks:
+        if not yes_book.has_both_sides or not no_book.has_both_sides:
             return []
 
         # Record prices for momentum tracking
@@ -193,11 +193,13 @@ class StaleOddsStrategy(BaseStrategy):
         current_mid = book.midpoint
 
         # Find the oldest price within our momentum window
+        # Deque appends right (newest last), so iterate from left (oldest first)
+        # We want the OLDEST entry that falls within the window
         oldest_in_window = None
         for pp in history:
             if now_ts - pp.timestamp <= self._momentum_window_sec:
                 oldest_in_window = pp
-                break
+                break  # First match from left = oldest in window
 
         if oldest_in_window is None:
             return None

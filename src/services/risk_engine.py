@@ -258,7 +258,13 @@ class RiskEngine:
             if not pm:
                 continue
             # Same category counts as correlated
-            if pm.category and pm.category == market.category or market.slug and pm.slug and market.slug.split("-")[:2] == pm.slug.split("-")[:2]:
+            same_category = pm.category and pm.category == market.category
+            same_slug_prefix = (
+                pm.slug and market.slug
+                and "-" in pm.slug and "-" in market.slug
+                and pm.slug.split("-")[:2] == market.slug.split("-")[:2]
+            )
+            if same_category or same_slug_prefix:
                 corr_exp += pos.size * pos.avg_entry
 
         proposed = corr_exp + order.size * order.price

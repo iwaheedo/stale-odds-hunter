@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -12,8 +13,6 @@ from src.utils.logging import get_logger
 from src.utils.time import seconds_since, utc_now
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from src.services.market_state import MarketStateService
     from src.services.risk_engine import RiskEngine
     from src.settings import Settings
@@ -77,10 +76,33 @@ class PaperExecutionService:
         signal_q = self._bus.subscribe(SignalGenerated)
         logger.info("Paper execution engine started")
 
+        # Restore position metadata from DB (survives restarts)
+        await self._restore_metas()
+
         await asyncio.gather(
             self._process_signals(signal_q),
             self._exit_monitor_loop(),
         )
+
+    async def _restore_metas(self) -> None:
+        """Load persisted position metadata from DB."""
+        try:
+            rows = await self._store.get_all_position_meta()
+            for r in rows:
+                self._open_metas[r["token_id"]] = PositionMeta(
+                    token_id=r["token_id"],
+                    condition_id=r["condition_id"],
+                    entry_edge=r["entry_edge"],
+                    entry_price=r["entry_price"],
+                    entry_fair_value=r["entry_fair_value"],
+                    entry_side=Side(r["entry_side"]),
+                    entry_time=datetime.fromisoformat(r["entry_time"]),
+                    size=r["size"],
+                )
+            if rows:
+                logger.info("Restored %d position metas from DB", len(rows))
+        except Exception:
+            logger.exception("Failed to restore position metas")
 
     # --- Signal Processing ---
 
@@ -119,8 +141,8 @@ class PaperExecutionService:
             await self._bus.emit(FillOccurred(fill=fill))
             self._total_fills += 1
 
-            # Track entry metadata for exit logic
-            self._open_metas[order.token_id] = PositionMeta(
+            # Track entry metadata for exit logic (in-memory + persisted)
+            meta = PositionMeta(
                 token_id=order.token_id,
                 condition_id=order.market_condition_id,
                 entry_edge=signal.edge,
@@ -129,6 +151,17 @@ class PaperExecutionService:
                 entry_side=signal.side,
                 entry_time=now,
                 size=fill.fill_size,
+            )
+            self._open_metas[order.token_id] = meta
+            await self._store.save_position_meta(
+                token_id=meta.token_id,
+                condition_id=meta.condition_id,
+                entry_edge=meta.entry_edge,
+                entry_price=meta.entry_price,
+                entry_fair_value=meta.entry_fair_value,
+                entry_side=meta.entry_side.value,
+                entry_time=meta.entry_time.isoformat(),
+                size=meta.size,
             )
 
             logger.info(
@@ -144,11 +177,25 @@ class PaperExecutionService:
         price = signal.market_price
 
         if price < 0.05 or price > 0.95:
-            size = 0.0  # Don't trade penny/near-certain tokens
-        else:
-            size = round(base_usd / price, 2)
-            size = min(size, 100.0)  # Cap at 100 shares to limit penny-token leverage
-            size = max(size, 5.0)
+            # Reject penny/near-certain tokens — return zero-size order
+            return Order(
+                id=str(uuid4()),
+                token_id=signal.token_id,
+                market_condition_id=signal.market_condition_id,
+                signal_id=signal.id,
+                side=signal.side,
+                price=price,
+                size=0.0,
+                order_type="GTC",
+                status=OrderStatus.REJECTED,
+                reject_reason="Price outside tradeable range [0.05, 0.95]",
+                is_paper=True,
+                created_at=utc_now(),
+            )
+
+        size = round(base_usd / price, 2)
+        size = min(size, 100.0)  # Cap at 100 shares to limit penny-token leverage
+        size = max(size, 5.0)
 
         return Order(
             id=str(uuid4()),
@@ -216,6 +263,10 @@ class PaperExecutionService:
 
     def _check_exit(self, pos: Position, meta: PositionMeta | None) -> str | None:
         """Check exit conditions. Returns reason or None."""
+        # Orphan positions (no metadata) should always be closed
+        if not meta:
+            return "no_metadata: exiting orphan position"
+
         book = self._state.get_book(pos.token_id)
         if not book or not book.bids or not book.asks:
             return None
@@ -226,24 +277,20 @@ class PaperExecutionService:
         else:
             current_pnl = (pos.avg_entry - book.best_ask) * pos.size
 
-        if meta:
-            # Absolute dollar thresholds — simple and predictable
-            profit_target = 1.00  # Take $1 profit
-            stop_loss = -2.00  # Cut at $2 loss
+        # Absolute dollar thresholds — simple and predictable
+        profit_target = 1.00  # Take $1 profit
+        stop_loss = -2.00  # Cut at $2 loss
 
-            if current_pnl >= profit_target:
-                return f"profit_target: pnl={current_pnl:+.2f} >= ${profit_target:.2f}"
+        if current_pnl >= profit_target:
+            return f"profit_target: pnl={current_pnl:+.2f} >= ${profit_target:.2f}"
 
-            if current_pnl <= stop_loss:
-                return f"stop_loss: pnl={current_pnl:+.2f} <= ${stop_loss:.2f}"
+        if current_pnl <= stop_loss:
+            return f"stop_loss: pnl={current_pnl:+.2f} <= ${stop_loss:.2f}"
 
-            # Time stop: 5 minutes — forces turnover, prevents stale positions
-            held_min = seconds_since(meta.entry_time) / 60.0
-            if held_min > 5:
-                return f"time_stop: {held_min:.0f}min > 5min"
-
-        else:
-            return "no_metadata: exiting orphan position"
+        # Time stop: 5 minutes — forces turnover, prevents stale positions
+        held_min = seconds_since(meta.entry_time) / 60.0
+        if held_min > 5:
+            return f"time_stop: {held_min:.0f}min > 5min"
 
         return None
 
@@ -292,8 +339,9 @@ class PaperExecutionService:
         await self._store.insert_fill(fill)
         await self._bus.emit(FillOccurred(fill=fill))
 
-        # Clean up metadata
+        # Clean up metadata (in-memory + persisted)
         self._open_metas.pop(pos.token_id, None)
+        await self._store.delete_position_meta(pos.token_id)
         self._total_exits += 1
 
         logger.info(

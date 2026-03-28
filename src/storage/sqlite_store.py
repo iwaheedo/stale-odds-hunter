@@ -167,6 +167,17 @@ class SQLiteStore:
                 timestamp TEXT NOT NULL,
                 config_blob TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS position_meta (
+                token_id TEXT PRIMARY KEY,
+                condition_id TEXT NOT NULL,
+                entry_edge REAL NOT NULL,
+                entry_price REAL NOT NULL,
+                entry_fair_value REAL NOT NULL,
+                entry_side TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                size REAL NOT NULL
+            );
         """)
         await self.conn.commit()
 
@@ -345,6 +356,32 @@ class SQLiteStore:
             )
             for r in rows
         ]
+
+    # --- Position Metadata ---
+
+    async def save_position_meta(
+        self, token_id: str, condition_id: str,
+        entry_edge: float, entry_price: float, entry_fair_value: float,
+        entry_side: str, entry_time: str, size: float,
+    ) -> None:
+        await self.conn.execute(
+            """INSERT OR REPLACE INTO position_meta
+               (token_id, condition_id, entry_edge, entry_price, entry_fair_value,
+                entry_side, entry_time, size)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (token_id, condition_id, entry_edge, entry_price, entry_fair_value,
+             entry_side, entry_time, size),
+        )
+        await self.conn.commit()
+
+    async def get_all_position_meta(self) -> list[dict]:
+        cursor = await self.conn.execute("SELECT * FROM position_meta")
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def delete_position_meta(self, token_id: str) -> None:
+        await self.conn.execute("DELETE FROM position_meta WHERE token_id = ?", (token_id,))
+        await self.conn.commit()
 
     # --- Risk Events ---
 

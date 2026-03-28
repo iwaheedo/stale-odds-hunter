@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -57,13 +58,17 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: dict[type, list[asyncio.Queue[Any]]] = defaultdict(list)
 
-    def subscribe(self, event_type: type) -> asyncio.Queue[Any]:
-        q: asyncio.Queue[Any] = asyncio.Queue()
+    def subscribe(self, event_type: type, maxsize: int = 1000) -> asyncio.Queue[Any]:
+        q: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
         self._subscribers[event_type].append(q)
         return q
 
     async def emit(self, event: Any) -> None:
         for q in self._subscribers[type(event)]:
+            if q.full():
+                # Drop oldest to prevent unbounded growth
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
             await q.put(event)
 
     def subscriber_count(self, event_type: type) -> int:
